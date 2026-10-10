@@ -1541,3 +1541,6 @@ select::-ms-expand { display: none; }
 .check-row input { width: 18px; height: 18px; accent-color: var(--cyan); }
 #gradeNote { margin-top: 8px; }
 .chip.grade { background: rgba(251, 191, 36, .14); color: #fcd34d; border-color: rgba(251, 191, 36, .4); }
+/* The sheet's ✕ becomes ← when closing steps back (e.g. a card opened from a profile). */
+.sheet-close .ic-back, .sheet-close.back .ic-close { display: none; }
+.sheet-close.back .ic-back { display: block; }

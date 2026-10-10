@@ -2528,22 +2528,45 @@
     el.addEventListener('click', () => el.classList.toggle('zoom'));
   }
 
+  // One step of "back": closing the sheet returns to what it showed before (e.g. a profile)
+  // instead of closing. Opening anything else in the sheet forgets it.
+  let sheetBack = null;
+  function setSheetBack(label, restore) {
+    sheetBack = restore;
+    $('#sheetClose').setAttribute('aria-label', label);
+    $('#sheetClose').classList.add('back');
+  }
+  function clearSheetBack() {
+    sheetBack = null;
+    $('#sheetClose').setAttribute('aria-label', 'Close');
+    $('#sheetClose').classList.remove('back');
+  }
   function openSheetShell() {
+    clearSheetBack();
     $('#sheetBackdrop').hidden = false;
     $('#sheet').hidden = false;
     $('#sheet').scrollTop = 0;
     document.body.style.overflow = 'hidden';
     $('#sheetClose').focus({ preventScroll: true });
   }
+  // The sheet's ✕ / backdrop / Escape: step back if there's somewhere to go back to.
+  function closeOrBack() {
+    if (!sheetBack || $('#sheet').hidden) return closeSheet();
+    const restore = sheetBack;
+    clearSheetBack();
+    sheetCtx = null;
+    restore();
+  }
   function closeSheet() {
+    clearSheetBack();
     $('#sheet').hidden = true;
     $('#sheetBackdrop').hidden = true;
     document.body.style.overflow = '';
     sheetCtx = null;
   }
-  $('#sheetClose').addEventListener('click', closeSheet);
-  $('#sheetBackdrop').addEventListener('click', closeSheet);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
+  $('#sheetClose').addEventListener('click', closeOrBack);
+  $('#sheetBackdrop').addEventListener('click', closeOrBack);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').hidden) closeOrBack(); });
 
   /* ================= Leaderboards (inside group chats) ================= */
   let lbData = null; // cached profile data is refreshed when this is cleared
@@ -2660,9 +2683,19 @@
   }
 
   async function openCardById(id) {
+    // Opened from a profile: closing the card goes back to that profile, where you were.
+    const ctx = profileCtx, scroll = $('#sheet').scrollTop;
+    const fromProfile = !!(ctx?.data && $('#sheetBody .profile'));
     try {
       const { card } = await api(`/api/card/${encodeURIComponent(id)}`);
-      if (card) openCard({ card });
+      if (!card) return;
+      openCard({ card });
+      if (fromProfile) setSheetBack('Back to profile', () => {
+        profileCtx = ctx;
+        renderProfile();
+        paintProfileCollection();
+        requestAnimationFrame(() => { $('#sheet').scrollTop = scroll; });
+      });
     } catch { toast('Couldn’t load that card'); }
   }
 
