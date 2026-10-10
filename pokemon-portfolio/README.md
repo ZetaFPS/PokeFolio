@@ -155,6 +155,13 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   your account; until a card's price has moved it shows a grey `– $0.00`. This is the card's price
   movement, not its P/L — a card's P/L (value vs. what you paid or its share of a purchase) is shown
   on the card's own page.
+- **Graded cards** — tick **Graded card (slabbed)** on a card's form and pick its grade (PSA 10,
+  9.5 (BGS/CGC), PSA 9 … PSA 1). The card is then valued at that grade's price instead of raw —
+  in its row (with a gold grade chip), your totals, P/L, chart and profile. Grade prices come from
+  the same graded lookup as the card page (PriceCharting, PokéFolio's saved/added prices, or a
+  marked ≈ estimate when neither has one) and are re-checked every 6 hours (10 minutes while only an
+  estimate is available; an estimate never replaces a real price). If a grade has no price yet, the
+  raw price is used until it does. Untick it to go back to raw.
 - **Purchases (packs, ETBs, boxes, bundles)** — besides a per-card "paid" price, record what you
   bought sealed: give it a name (`Base Set ETB`), a type (booster pack, booster box, Elite Trainer
   Box, booster bundle, collection box, tin, blister, bulk lot, other), the price paid, a date and a

@@ -208,7 +208,7 @@
     setTimeout(promptUsername, 900);
     setTimeout(offerInstall, 4000);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
-    else if (state.items.length) recordSnapshot();
+    else if (state.items.length) { recordSnapshot(); refreshGraded(); }
   }
 
   /* ---------- Home-screen app ---------- */
@@ -426,7 +426,11 @@
     return rawCache.get(`${card.id}|${variant || ''}`) || null;
   }
   const APPROX_SOURCES = new Set(['Cardmarket', 'TCGplayer listing']);
+  // Graded (slabbed) cards: the grade's market price replaces the raw price once it's known.
+  const GRADES = ['PSA 10', 'Grade 9.5', 'Grade 9', 'Grade 8', 'Grade 7', 'Grade 6', 'Grade 5', 'Grade 4', 'Grade 3', 'Grade 2', 'Grade 1'];
+  const isGraded = (item) => !!item.grade && GRADES.includes(item.grade);
   function itemPrice(item) {
+    if (isGraded(item) && item.gradedPrice != null) return item.gradedPrice;
     if (item.rawPrice != null) return item.rawPrice;
     return knownRaw(item.card, item.variant)?.price ?? null;
   }
@@ -491,7 +495,7 @@
   // state.cardHistory[cardId|printing] = [[day, unitPrice], …] — a point only when the price
   // changes (today's point is updated in place), at most 160 per card.
   const dayNum = (t = Date.now()) => Math.floor(t / 864e5);
-  const priceKey = (it) => `${it.cardId}|${it.variant || ''}`;
+  const priceKey = (it) => `${it.cardId}|${it.variant || ''}${isGraded(it) ? `|${it.grade}` : ''}`;
   function recordCardPrices() {
     const day = dayNum();
     const hist = (state.cardHistory ||= {});
@@ -558,6 +562,46 @@
       if (!silent) toast('Couldn’t refresh prices — try again shortly');
     } finally {
       btn.classList.remove('spinning');
+    }
+    refreshGraded({ maxAge: silent ? GRADED_TTL : 30 * 60e3 });
+  }
+
+  // Graded cards' prices (PriceCharting's graded sales, or PokéFolio's saved/added prices) are
+  // looked up separately — a few at a time, since each one is a PriceCharting lookup.
+  const GRADED_TTL = 6 * 3600e3;
+  let gradedLoading = false;
+  // stale: PriceCharting couldn't be reached, so the prices are stand-in estimates — use one only if
+  // there's no real price yet, and look again in 10 minutes.
+  function applyGraded(it, prices, estimated, stale = false) {
+    const v = prices?.[it.grade];
+    if (v == null) return false;
+    const retryAt = Date.now() - GRADED_TTL + 10 * 60e3;
+    if (stale && it.gradedPrice != null && !it.gradedEstimated) { it.gradedAt = retryAt; return false; }
+    const changed = it.gradedPrice !== v;
+    it.gradedPrice = v;
+    it.gradedEstimated = stale || (estimated || []).includes(it.grade);
+    it.gradedAt = stale ? retryAt : Date.now();
+    return changed;
+  }
+  async function refreshGraded({ maxAge = GRADED_TTL } = {}) {
+    if (gradedLoading) return;
+    const due = state.items.filter((it) => isGraded(it) && !(Date.now() - (it.gradedAt || 0) < maxAge));
+    if (!due.length) return;
+    gradedLoading = true;
+    try {
+      const keys = [...new Map(due.map((it) => [`${it.cardId}|${it.variant || ''}`, it])).values()];
+      for (let i = 0; i < keys.length; i += 8) {
+        const chunk = keys.slice(i, i + 8);
+        const r = await api('/api/prices/psa', { method: 'POST', body: { cards: chunk.map((it) => ({ id: it.cardId, variant: it.variant || null })) } }).catch(() => null);
+        let changed = false;
+        for (const it of due) {
+          const v = r?.prices?.[`${it.cardId}|${it.variant || ''}`];
+          if (v && applyGraded(it, v.grades, v.estimatedGrades, !!v.retry)) changed = true;
+        }
+        if (changed) { recordSnapshot(); renderPortfolio(); }
+      }
+    } finally {
+      gradedLoading = false;
     }
   }
 
@@ -1004,6 +1048,7 @@
     lsSet('pokefolio.psa', JSON.stringify([...psaCache].slice(-1500)));
   }
   function psaPotential(it) {
+    if (isGraded(it)) return null;
     const p = psaOf(it);
     if (!p || p.psa10 == null) return null;
     return p.psa10 - (itemPrice(it) ?? p.raw ?? 0);
@@ -1073,13 +1118,14 @@
             ${it.qty > 1 ? `<span class="chip qty">×${it.qty}</span>` : ''}
             ${lot ? `<span class="chip lot" title="From your purchase: ${esc(lot.name)}">📦 ${esc(lot.name)}</span>` : ''}
             ${c.lang === 'ja' ? '<span class="chip jp">Japanese</span>' : ''}
+            ${isGraded(it) ? `<span class="chip grade" title="Graded card — valued at its ${esc(gradeLabel(it.grade))} price${it.gradedPrice == null ? ' (not found yet — showing the raw price)' : ''}">${esc(gradeLabel(it.grade))}</span>` : ''}
             ${it.variant ? `<span class="chip">${esc(VARIANT_LABELS[it.variant] || it.variant)}</span>` : ''}
             ${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ''}
             ${sort === 'psa' ? psaChip(it) : ''}
           </div>
         </div>
         <div class="price">
-          <div class="v num ${flash}">${price == null ? '<span class="muted">No price</span>' : `${APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
+          <div class="v num ${flash}">${price == null ? '<span class="muted">No price</span>' : `${isGraded(it) && it.gradedPrice != null ? (it.gradedEstimated ? '<span class="approx" title="Estimated — no recent sales at this grade">≈</span>' : '') : APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
           ${changeHtml(it)}
           ${it.qty > 1 && price != null ? `<div class="muted num">${money(price)} ea</div>` : ''}
         </div>
@@ -2206,6 +2252,7 @@
       ctx.gradedError = res.gradedError;
       if (ctx.raw) rawCache.set(`${ctx.card.id}|${ctx.variant || ''}`, ctx.raw);
       rememberPsa(ctx.card.id, ctx.variant, res);
+      if (ctx.item && isGraded(ctx.item) && ctx.item.variant === ctx.variant && applyGraded(ctx.item, res.graded?.prices, res.graded?.estimated, !!res.gradedError)) { recordSnapshot(); renderPortfolio(); }
       if ($('#sortSelect').value === 'psa') renderList();
       // Keep the owned item's raw price fresh too.
       if (ctx.item && ctx.raw && ctx.item.variant === ctx.variant && ctx.item.rawPrice !== ctx.raw.price) {
@@ -2221,7 +2268,9 @@
     ctx.loading = false;
     renderPriceHero();
     renderGraded();
+    if (sheetCtx === ctx) paintGrade?.();
   }
+  let paintGrade = null; // set while a card's form is open
 
   function openCard({ card, item }) {
     const isOwned = !!item;
@@ -2278,10 +2327,15 @@
           <div class="field"><label for="qtyInput">Quantity</label>
             <div class="stepper"><button type="button" data-step="-1" aria-label="Decrease">−</button><input id="qtyInput" type="number" min="1" inputmode="numeric" value="${isOwned ? item.qty : 1}"><button type="button" data-step="1" aria-label="Increase">+</button></div>
           </div>
-          <div class="field"><label for="condSelect">Condition</label>
+          <div class="field" id="condField"><label for="condSelect">Condition</label>
             <select id="condSelect">${CONDITIONS.map((x) => `<option ${x === (isOwned ? item.condition : CONDITIONS[0]) ? 'selected' : ''}>${x}</option>`).join('')}</select>
           </div>
+          <div class="field" id="gradeField" hidden><label for="gradeSelect">Grade</label>
+            <select id="gradeSelect">${GRADES.map((g) => `<option value="${esc(g)}" ${isOwned && item.grade === g ? 'selected' : ''}>${esc(gradeLabel(g))}${g === 'Grade 9.5' ? ' (BGS/CGC)' : ''}</option>`).join('')}</select>
+          </div>
         </div>
+        <label class="check-row"><input type="checkbox" id="gradedChk" ${isOwned && isGraded(item) ? 'checked' : ''}> Graded card (slabbed)</label>
+        <p class="note" id="gradeNote" hidden></p>
         <div class="field" style="margin-top:10px"><label for="boughtAs">Bought as</label>
           <select id="boughtAs">
             <option value="">A single card</option>
@@ -2369,30 +2423,71 @@
       });
     });
     paintBoughtAs();
+
+    // Graded: pick the grade; the card is then valued at that grade's price instead of raw.
+    paintGrade = () => {
+      if (!$('#gradedChk')) return;
+      const on = $('#gradedChk').checked, g = $('#gradeSelect').value;
+      $('#gradeField').hidden = !on;
+      $('#condField').hidden = on;
+      const note = $('#gradeNote');
+      note.hidden = !on;
+      if (!on) return;
+      const v = sheetCtx.graded?.prices?.[g];
+      const est = (sheetCtx.graded?.estimated || []).includes(g);
+      note.innerHTML = v != null
+        ? `Valued at the <b>${esc(gradeLabel(g))}</b> price: <b class="num">${est ? '≈' : ''}${money(v)}</b>${est ? ' (estimated — no recent sales at this grade)' : ''} each, instead of raw.`
+        : sheetCtx.loading ? `Looking up the ${esc(gradeLabel(g))} price…`
+          : `No ${esc(gradeLabel(g))} price found yet — the raw price is used until one is.`;
+    };
+    $('#gradedChk').addEventListener('change', paintGrade);
+    $('#gradeSelect').addEventListener('change', paintGrade);
+    paintGrade();
+    // Grade fields for an item from the form, using the open card's graded prices when loaded.
+    const gradeFields = (grade, prev) => {
+      if (!grade) return { grade: null, gradedPrice: null, gradedEstimated: false, gradedAt: 0 };
+      if (sheetCtx.graded?.prices?.[grade] != null) {
+        const it = prev?.grade === grade ? { ...prev } : { grade };
+        applyGraded(it, sheetCtx.graded.prices, sheetCtx.graded.estimated, !!sheetCtx.gradedError);
+        return { grade, gradedPrice: it.gradedPrice, gradedEstimated: !!it.gradedEstimated, gradedAt: it.gradedAt };
+      }
+      // Not loaded: keep the old price only if it's for the same grade, and look it up later.
+      return prev?.grade === grade ? { grade, gradedPrice: prev.gradedPrice ?? null, gradedEstimated: !!prev.gradedEstimated, gradedAt: 0 } : { grade, gradedPrice: null, gradedEstimated: false, gradedAt: 0 };
+    };
     const readForm = () => ({
       qty: Math.max(1, parseInt($('#qtyInput').value, 10) || 1),
       condition: $('#condSelect').value,
       purchasePrice: Math.max(0, +$('#paidInput').value || 0),
       variant: sheetCtx.variant,
       lotId: lotById($('#boughtAs').value)?.id || null,
+      grade: $('#gradedChk').checked ? $('#gradeSelect').value : null,
     });
     const currentRaw = () => sheetCtx.raw || knownRaw(c, sheetCtx.variant);
     $('#addBtn')?.addEventListener('click', () => {
       const f = readForm();
       const r = currentRaw();
-      const { lotId, ...rest } = f;
-      state.items.push({ uid: uid(), cardId: c.id, card: c, addedAt: Date.now(), rawPrice: r?.price ?? null, priceSource: r?.source || null, ...rest, ...(lotId ? { lotId } : {}) });
+      const { lotId, grade, ...rest } = f;
+      const g = gradeFields(grade, null);
+      const added = { uid: uid(), cardId: c.id, card: c, addedAt: Date.now(), rawPrice: r?.price ?? null, priceSource: r?.source || null, ...rest, ...(lotId ? { lotId } : {}), ...(grade ? g : {}) };
+      state.items.push(added);
       if (!state.pricesUpdatedAt) state.pricesUpdatedAt = Date.now();
       recordSnapshot();
       closeSheet();
-      toast(`Added ${c.name}${r?.price != null ? ` · ${money(r.price * f.qty)}` : ''}`);
+      const shown = itemPrice(added);
+      toast(`Added ${c.name}${isGraded(added) ? ` (${gradeLabel(added.grade)})` : ''}${shown != null ? ` · ${money(shown * f.qty)}` : ''}`);
+      if (isGraded(added) && added.gradedPrice == null) refreshGraded();
     });
     $('#saveBtn')?.addEventListener('click', () => {
       const f = readForm();
       if (f.variant !== item.variant) { const r = currentRaw(); item.rawPrice = r?.price ?? null; item.priceSource = r?.source || null; }
-      const { lotId, ...rest } = f;
+      const { lotId, grade, ...rest } = f;
+      // A different printing has a different graded price too.
+      const g = gradeFields(grade, f.variant === item.variant ? item : null);
       Object.assign(item, rest);
       if (lotId) item.lotId = lotId; else delete item.lotId;
+      if (grade) Object.assign(item, g);
+      else for (const k of ['grade', 'gradedPrice', 'gradedEstimated', 'gradedAt']) delete item[k];
+      if (isGraded(item) && item.gradedPrice == null) setTimeout(refreshGraded, 0);
       recordSnapshot();
       closeSheet();
       renderPortfolio();

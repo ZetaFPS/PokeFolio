@@ -1535,3 +1535,9 @@ select::-ms-expand { display: none; }
 .install-text > b { color: var(--text); font-size: 14px; }
 .install-text svg { vertical-align: -2px; color: var(--cyan); }
 @media (min-width: 1024px) { .install-hint { bottom: 24px; } }
+
+/* ---------- Graded cards ---------- */
+.check-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 14px; font-weight: 500; color: var(--text); cursor: pointer; width: fit-content; }
+.check-row input { width: 18px; height: 18px; accent-color: var(--cyan); }
+#gradeNote { margin-top: 8px; }
+.chip.grade { background: rgba(251, 191, 36, .14); color: #fcd34d; border-color: rgba(251, 191, 36, .4); }

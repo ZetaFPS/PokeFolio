@@ -356,7 +356,11 @@ async function api(req, res, url) {
           const r = await prices.fullPrices(c.id, typeof c.variant === 'string' ? c.variant.slice(0, 40) : null);
           const psa10 = r.graded?.prices?.['PSA 10'] ?? null;
           // retry: PriceCharting couldn't be reached, so this is only a stand-in estimate.
-          out[key] = { psa10, estimated: !!r.graded?.estimated?.includes('PSA 10'), raw: r.raw?.price ?? null, retry: !!r.gradedError };
+          out[key] = {
+            psa10, estimated: !!r.graded?.estimated?.includes('PSA 10'), raw: r.raw?.price ?? null, retry: !!r.gradedError,
+            // Every grade's price, for cards the user marked as graded.
+            grades: r.graded?.prices || null, estimatedGrades: r.graded?.estimated || [],
+          };
         } catch (e) {
           out[key] = { psa10: null, error: e.message, retry: true };
         }

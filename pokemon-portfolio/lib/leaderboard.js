@@ -62,6 +62,10 @@ function createLeaderboard(store, prices) {
         // capped so a tampered value can't dominate.
         let unit = priced.has(k) ? priced.get(k) : Math.min(+it.rawPrice || 0, 500);
         unit = Number.isFinite(unit) ? unit : 0;
+        // Graded (slabbed) cards count at the grade price the app looked up, capped against the
+        // raw price so an edited value can't dominate.
+        const g = +it.gradedPrice;
+        if (it.grade && Number.isFinite(g) && g > 0) unit = Math.min(g, Math.max(unit * 60, 100));
         value += unit * qty;
         cards += qty;
         byCard.push({ id: it.cardId, variant: it.variant || null, qty, price: unit });
