@@ -12,7 +12,7 @@
 //     it owns (groups with other members are handed to the longest-standing member instead).
 //   • Admins can't ban or delete themselves or other admins.
 const crypto = require('crypto');
-const { avatarUrl, isAdmin, isMod, isStaff } = require('./auth');
+const { avatarUrl, isAdmin, isMod, isStaff, isPremium, premiumSource } = require('./auth');
 
 const REASONS = {
   listing: 'Inappropriate listing',
@@ -36,6 +36,7 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
     id: u.id, name: u.name, username: u.username || null, email: isAdmin(viewer) ? u.email : null, avatar: avatarUrl(u.id, u.avatarAt), bio: u.bio || '',
     createdAt: u.createdAt, bannedAt: u.bannedAt || null, banReason: u.banReason || null, admin: isAdmin(u), mod: isMod(u),
     productCount: u.productCount, warningCount: u.warningCount,
+    premium: isPremium(u), premiumSource: premiumSource(u), premiumUntil: u.premiumUntil || null,
   });
   const productRow = (p) => ({
     id: p.id, title: p.title, price: p.price, description: p.description || '', createdAt: p.createdAt,
@@ -205,6 +206,16 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
         if (isAdmin(u)) throw httpError(400, 'Admins are set with ADMIN_EMAILS, not here.');
         const role = (await readBody(req)).role === 'mod' ? 'mod' : null;
         await store.updateUser(u.id, { role });
+        live.send(u.id, 'account', {});
+        send(res, 200, { user: userRow(await store.getUser(u.id), me) });
+        return true;
+      }
+      // POST /api/admin/users/:id/premium { on: true|false } — admins give (or take back) Premium
+      // for free: unlimited cards, same as paying. Doesn't touch a paid subscription.
+      if (action === 'premium' && method === 'POST') {
+        adminOnly();
+        const u = await target(id, me);
+        await store.updateUser(u.id, { premiumGranted: (await readBody(req)).on === true });
         live.send(u.id, 'account', {});
         send(res, 200, { user: userRow(await store.getUser(u.id), me) });
         return true;

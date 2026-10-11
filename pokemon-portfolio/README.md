@@ -313,10 +313,45 @@ HTTPS for phones.
 | `DATABASE_URL` | **Recommended for any hosted site.** PostgreSQL connection string; accounts and portfolios are stored there and survive redeploys. |
 | `DATA_DIR` | Where accounts are stored when there's no `DATABASE_URL` (default `./data`). |
 | `PRICECHARTING_TOKEN` | Recommended. Your [PriceCharting API](https://www.pricecharting.com/api-documentation) token (paid subscription). When set, graded prices come from the official API. Without it, the server reads PriceCharting's public product pages, which is slower and can break if their page layout changes. |
+| `STRIPE_SECRET_KEY` | Turns on Premium checkout (see **Premium** below). Your Stripe secret key, `sk_live_…` (or `sk_test_…` while testing). |
+| `STRIPE_PRICE_ID` | The Premium price (`price_…`) from your Stripe dashboard. A recurring price makes Premium a subscription; a one-time price makes it lifetime. |
+| `STRIPE_WEBHOOK_SECRET` | The signing secret (`whsec_…`) of the Stripe webhook pointed at `https://your-site/api/premium/webhook`. |
 | `POKEMONTCG_API_KEY` | Optional free key from [pokemontcg.io](https://dev.pokemontcg.io) for higher rate limits. |
 | `TRUST_PROXY` | Set to `1` when running behind a reverse proxy so rate limiting uses `X-Forwarded-For`. |
 | `VISUAL_INDEX` | Set to `off` to disable the scanner's visual index (the scanner then relies on reading the card's text). |
 | `VISUAL_INDEX_LANGS` | Which catalogues to index: `en,ja` (default), `en` or `ja`. |
+
+### Premium (35-card free limit)
+
+Free accounts (and the no-account mode) hold up to **35 cards** — counted like the Cards figure,
+so quantities count. At the limit, adding a card (or raising a quantity) opens the **Premium**
+sheet instead; the Cards figure shows `/ 35`, and Account → **Plan** shows the plan. The server
+enforces it too. Accounts that already had more than 35 cards keep them all (and can edit or
+remove them) — they just can't add more while over the limit.
+
+Premium = unlimited cards. It comes from:
+- **Paying** through Stripe Checkout, which offers **Apple Pay** on iPhone/iPad/Mac Safari (plus
+  cards and Google Pay). After paying, the app checks the payment straight away and Premium switches
+  on; subscribers get **Manage or cancel subscription** (Stripe's billing page).
+- **An admin** — Admin panel → a user → **✦ Give Premium** (or **Remove Premium**). Free, no expiry,
+  works exactly like paying. Admins themselves always have it.
+
+Setting up payments (Stripe):
+1. Create a [Stripe](https://dashboard.stripe.com) account. Under **Product catalogue**, add a
+   product "PokéFolio Premium" with a price — e.g. $4.99 monthly (subscription) or a one-time price
+   (lifetime). Copy the price's id (`price_…`).
+2. **Developers → API keys**: copy the secret key (`sk_live_…`; use test mode's `sk_test_…` first).
+3. **Developers → Webhooks → Add endpoint**: URL `https://your-site/api/premium/webhook`, events
+   `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`,
+   `invoice.paid`. Copy its **signing secret** (`whsec_…`).
+4. **Settings → Payment methods**: make sure **Apple Pay** (and Google Pay) are on — Stripe Checkout
+   then shows them automatically; no Apple developer account needed for the website.
+5. **Settings → Billing → Customer portal**: save the settings once, so subscribers can cancel.
+6. In Render → your service → **Environment**, add `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` and
+   `STRIPE_WEBHOOK_SECRET`, then redeploy. Until they're set, the sheet says "Premium is coming soon".
+
+The webhook keeps subscriptions in step (renewals, cancellations, failed payments); a subscription
+that ends drops back to the free limit, keeping every card already saved.
 
 ### The visual index
 

@@ -5,7 +5,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { createStore } = require('./lib/store');
-const { createAuth, httpError, checkUsername, isAdmin } = require('./lib/auth');
+const { createAuth, httpError, checkUsername, isAdmin, isPremium, FREE_CARD_LIMIT } = require('./lib/auth');
+const { createPremium, cardCount } = require('./lib/premium');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi, sniffImage } = require('./lib/groups');
@@ -23,7 +24,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi, socialApi, adminApi, visualIndex, catalog, packs; // set up in start()
+let store, auth, leaderboard, groupsApi, socialApi, premiumApi, adminApi, visualIndex, catalog, packs; // set up in start()
 const live = createLive();
 
 const MIME = {
@@ -272,6 +273,14 @@ async function api(req, res, url) {
     if (method === 'PUT') {
       const body = await readBody(req);
       if (!Array.isArray(body.items) || body.items.length > 10000) throw httpError(400, 'Invalid portfolio.');
+      // Free accounts hold up to FREE_CARD_LIMIT cards. Accounts already over it keep what they
+      // have (and can remove cards) but can't add more until they're Premium.
+      if (!isPremium(user)) {
+        const n = cardCount(body.items);
+        if (n > FREE_CARD_LIMIT && n > cardCount((await store.getPortfolio(user.id))?.items)) {
+          throw httpError(402, `Free accounts can hold up to ${FREE_CARD_LIMIT} cards. Get Premium for unlimited cards.`);
+        }
+      }
       const history = body.history && typeof body.history === 'object' && !Array.isArray(body.history) ? body.history : {};
       // Per-card price points: { "cardId|printing": [[day, price], …] } — kept small and well-formed.
       const cardHistory = {};
@@ -481,6 +490,7 @@ async function api(req, res, url) {
   if (pathname.startsWith('/api/admin/') && await adminApi(req, res, url)) return;
 
   // --- profiles, friends, direct messages, stores ---
+  if ((pathname === '/api/premium' || pathname.startsWith('/api/premium/')) && await premiumApi(req, res, url)) return;
   if (/^\/api\/(users|friends|dm|products|places)(\/|$)/.test(pathname) && await socialApi(req, res, url)) return;
 
   // --- groups: chat, photos, card shares, group leaderboard ---
@@ -672,6 +682,7 @@ async function start() {
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit, live });
+  premiumApi = createPremium({ store, httpError, send, readBody, requireUser, optionalUser, isHttps, live });
   socialApi = createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live, isAdmin });
   adminApi = createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live, prices });
   catalog = createCatalog({ store });

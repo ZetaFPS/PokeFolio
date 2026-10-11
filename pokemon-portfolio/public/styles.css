@@ -1572,3 +1572,32 @@ select::-ms-expand { display: none; }
 .loc-row input { flex: 1; min-width: 0; }
 .loc-row .btn { flex: none; display: inline-flex; align-items: center; gap: 5px; }
 .profile-actions .btn svg { vertical-align: -2px; }
+
+/* ---------- Premium ---------- */
+.tag.premium { color: #1a1205; background: linear-gradient(90deg, #fcd34d, #f59e0b); }
+.stat-cap { color: var(--text-3); font-weight: 600; letter-spacing: .04em; }
+#statCardsBox { cursor: pointer; }
+#statCardsBox.at-limit { border-color: rgba(251, 191, 36, .5); }
+#statCardsBox.at-limit .stat-cap { color: #fcd34d; }
+.premium { display: grid; gap: 14px; text-align: center; padding: 6px 4px 8px; }
+.premium-mark {
+  width: 64px; height: 64px; margin: 0 auto; border-radius: 20px; display: grid; place-items: center; font-size: 30px; color: #1a1205;
+  background: linear-gradient(135deg, #fde68a, #f59e0b 55%, #f472b6); box-shadow: 0 10px 40px rgba(245, 158, 11, .35);
+}
+.premium h3 { font-family: var(--font-display); font-size: 26px; margin: 0; }
+.premium-lead { margin: 0; color: var(--text-2); font-size: 15px; line-height: 1.5; }
+.premium-lead b { color: var(--text); }
+.premium-perks { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 8px; text-align: left; }
+.premium-perks li { position: relative; padding: 10px 12px 10px 38px; border-radius: 14px; background: var(--glass); border: 1px solid var(--edge); font-size: 14px; color: var(--text-2); line-height: 1.45; }
+.premium-perks li::before { content: "✓"; position: absolute; left: 14px; top: 10px; color: #fcd34d; font-weight: 800; }
+.premium-perks b { color: var(--text); }
+.premium-price { margin: 4px 0 0; font-size: 24px; font-weight: 700; }
+.premium-buy { font-size: 16px; padding: 14px; }
+.premium-pay { margin: -6px 0 0; }
+.premium-on { display: grid; gap: 4px; padding: 14px; border-radius: 16px; border-color: rgba(251, 191, 36, .45); }
+.premium-on b { color: #fcd34d; font-size: 16px; }
+.premium-on span { color: var(--text-2); font-size: 13.5px; }
+.premium-tag { color: #fcd34d; }
+.plan-row { text-align: left; color: inherit; cursor: pointer; }
+.plan-row:hover { border-color: var(--edge-2); }
+.plan-up { color: #fcd34d; font-weight: 700; margin-left: 4px; white-space: nowrap; }

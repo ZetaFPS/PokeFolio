@@ -82,6 +82,12 @@
       setSync('ok', 'Synced');
     } catch (e) {
       if (e.status === 401) return signedOut('Your session expired — please sign in again.');
+      if (e.status === 402) {
+        // Over the free limit (e.g. cards brought over from this device): don't retry until Premium.
+        setSync('err', `Not synced — over ${FREE_LIMIT} cards`);
+        if (!syncLimitShown) { syncLimitShown = true; setTimeout(() => openPremium('sync'), 600); }
+        return;
+      }
       setSync('err', 'Offline — will retry');
       clearTimeout(syncTimer);
       syncTimer = setTimeout(pushRemote, 15000);
@@ -206,6 +212,7 @@
     paintAdminAccess();
     handleInviteLink();
     handleProfileLink();
+    handlePremiumReturn();
     setTimeout(promptUsername, 900);
     setTimeout(offerInstall, 4000);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
@@ -248,6 +255,82 @@
     });
   }
 
+  /* ---------- Premium: free accounts hold up to FREE_LIMIT cards ---------- */
+  const FREE_LIMIT = 35;
+  const isPremiumUser = () => !!user?.premium;
+  const cardTotal = () => state.items.reduce((n, i) => n + (i.qty || 1), 0);
+  // Room for `extra` more cards? Removing is always fine — accounts already over the limit keep
+  // their cards, they just can't add more.
+  const roomFor = (extra) => extra <= 0 || isPremiumUser() || cardTotal() + extra <= FREE_LIMIT;
+  let premiumInfo = null; // { enabled, price } from the server
+  const priceLabel = (p) => {
+    if (!p || p.amount == null) return '';
+    const amt = new Intl.NumberFormat(undefined, { style: 'currency', currency: p.currency || 'USD' }).format(p.amount);
+    if (!p.interval) return `${amt} one-time`;
+    return `${amt} / ${p.intervalCount > 1 ? `${p.intervalCount} ${p.interval}s` : p.interval}`;
+  };
+  async function openPremium(reason = '') {
+    $('#sheetBody').innerHTML = loaderHtml('premium');
+    openSheetShell();
+    try { premiumInfo = await api('/api/premium'); } catch { premiumInfo = premiumInfo || { enabled: false, price: null }; }
+    const n = cardTotal();
+    const src = user?.premiumSource;
+    const until = user?.premiumUntil && user.premiumUntil < 2e14 ? new Date(user.premiumUntil).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : null;
+    const lead = reason === 'limit' ? `You’ve reached the free limit of <b>${FREE_LIMIT} cards</b>.`
+      : reason === 'sync' ? `Your collection has more than <b>${FREE_LIMIT} cards</b>, so new ones can’t be saved to your account.`
+        : isPremiumUser() ? '' : `You’re using <b>${Math.min(n, 9999)} of ${FREE_LIMIT}</b> free cards.`;
+    const price = priceLabel(premiumInfo.price);
+    $('#sheetBody').innerHTML = `
+      <div class="premium">
+        <div class="premium-mark" aria-hidden="true">✦</div>
+        <h3 id="sheetTitle">PokéFolio Premium</h3>
+        ${lead ? `<p class="premium-lead">${lead}</p>` : ''}
+        ${isPremiumUser() ? `
+          <div class="premium-on glass"><b>✓ You have Premium</b><span>${src === 'paid'
+    ? (until ? `Active · renews or ends ${esc(until)}` : 'Active for life — thank you!')
+    : src === 'granted' ? 'Given to your account by PokéFolio.' : 'Included with your admin account.'}</span></div>
+          ${user?.canManageBilling && src === 'paid' ? '<button class="btn block" id="premiumManage">Manage or cancel subscription</button>' : ''}`
+    : `
+          <ul class="premium-perks">
+            <li><b>Unlimited cards</b> in your portfolio — free accounts hold ${FREE_LIMIT}</li>
+            <li>Everything stays the same: prices, P/L, purchases, graded values and the scanner</li>
+            <li>Support PokéFolio’s development</li>
+          </ul>
+          ${price ? `<p class="premium-price num">${esc(price)}</p>` : ''}
+          ${!user ? '<button class="btn primary glow block" id="premiumSignup">Create a free account to upgrade</button>'
+    : premiumInfo.enabled ? '<button class="btn primary glow block premium-buy" id="premiumBuy">Get Premium</button><p class="note premium-pay">Pay with Apple Pay, a card or Google Pay — secure checkout by Stripe.</p>'
+      : '<button class="btn block" disabled>Premium is coming soon</button>'}`}
+        ${!isPremiumUser() && n > FREE_LIMIT ? `<p class="note">Your ${n} cards are safe — you can keep, edit and remove them. Adding more needs Premium.</p>` : ''}
+      </div>`;
+    $('#premiumSignup')?.addEventListener('click', () => { closeSheet(); showAuth(); setAuthMode('signup'); });
+    $('#premiumBuy')?.addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true; b.textContent = 'Opening secure checkout…';
+      try { location.href = (await api('/api/premium/checkout', { method: 'POST', body: {} })).url; }
+      catch (ex) { toast(ex.message || 'Couldn’t open checkout — try again'); b.disabled = false; b.textContent = 'Get Premium'; }
+    });
+    $('#premiumManage')?.addEventListener('click', async () => {
+      try { location.href = (await api('/api/premium/portal', { method: 'POST', body: {} })).url; } catch (ex) { toast(ex.message || 'Couldn’t open billing — try again'); }
+    });
+  }
+  // Back from Stripe Checkout (?premium=success&session_id=…, or ?premium=cancel).
+  async function handlePremiumReturn() {
+    const params = new URLSearchParams(location.search);
+    const outcome = params.get('premium');
+    if (!outcome) return;
+    const sessionId = params.get('session_id');
+    params.delete('premium'); params.delete('session_id');
+    history.replaceState(null, '', location.pathname + (params.toString() ? `?${params}` : ''));
+    if (outcome !== 'success') return toast('Checkout cancelled — no payment was taken');
+    if (!user) return;
+    try { await api('/api/premium/confirm', { method: 'POST', body: { sessionId } }); } catch { /* the webhook will finish it */ }
+    try { user = (await api('/api/auth/me')).user || user; } catch { /* keep */ }
+    renderPortfolio();
+    if (isPremiumUser()) { toast('Welcome to Premium ✦ — unlimited cards unlocked'); pushRemote(); }
+    else toast('Payment received — Premium will switch on in a moment');
+  }
+  let syncLimitShown = false;
+
   function initials() {
     return user ? (user.name || user.email).trim().charAt(0).toUpperCase() : '';
   }
@@ -259,6 +342,7 @@
     a.innerHTML = user ? faceHtml(user.name || user.email, user.avatar) : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
   }
   $('#accountBtn').addEventListener('click', openAccount);
+  $('#statCardsBox').addEventListener('click', () => { if (!isPremiumUser()) openPremium(cardTotal() >= FREE_LIMIT ? 'limit' : ''); });
 
   function openAccount() {
     const t = totals();
@@ -284,6 +368,7 @@
           <div class="info"><div class="k">Raw value</div><div class="v num">${money(t.value)}</div></div>
           <div class="info"><div class="k">Member since</div><div class="v">${new Date(user.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</div></div>
           <div class="info"><div class="k">Sync</div><div class="v">${esc($('#syncState').textContent || '—')}</div></div>
+          <button class="info plan-row" id="acctPlan" style="grid-column:1/-1"><div class="k">Plan</div><div class="v">${isPremiumUser() ? '<b class="premium-tag">✦ Premium</b> · unlimited cards' : `Free · ${t.count} of ${FREE_LIMIT} cards <span class="plan-up">Upgrade ›</span>`}</div></button>
           <div class="info" style="grid-column:1/-1"><div class="k">Account storage</div><div class="v">${storageInfo?.persistent === false ? '<span class="down">⚠ Temporary — erased when the site updates</span>' : storageInfo?.storage === 'postgres' ? '<span class="up">✓ Database — kept across updates</span>' : 'Saved on this server'}</div></div>
         </div>
         <label class="switch-row glass">
@@ -307,6 +392,7 @@
         </div>
       </div>`;
     openSheetShell();
+    $('#acctPlan')?.addEventListener('click', () => openPremium());
     $('#logoutBtn')?.addEventListener('click', async () => {
       clearTimeout(syncTimer);
       await pushRemote().catch(() => {});
@@ -897,6 +983,9 @@
     const { value, cost, count, gain } = totals();
     animateValue($('#totalValue'), value, money);
     animateValue($('#statCards'), count, (n) => String(Math.round(n)));
+    $('#statCap').hidden = isPremiumUser();
+    $('#statCap').textContent = `/ ${FREE_LIMIT}`;
+    $('#statCardsBox').classList.toggle('at-limit', !isPremiumUser() && count >= FREE_LIMIT);
     animateValue($('#statCost'), cost, money);
     const statGain = $('#statGain');
     statGain.className = 'stat-value num ' + (cost ? (gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat') : '');
@@ -2466,6 +2555,7 @@
     const currentRaw = () => sheetCtx.raw || knownRaw(c, sheetCtx.variant);
     $('#addBtn')?.addEventListener('click', () => {
       const f = readForm();
+      if (!roomFor(f.qty)) return openPremium('limit');
       const r = currentRaw();
       const { lotId, grade, ...rest } = f;
       const g = gradeFields(grade, null);
@@ -2480,6 +2570,7 @@
     });
     $('#saveBtn')?.addEventListener('click', () => {
       const f = readForm();
+      if (!roomFor(f.qty - item.qty)) return openPremium('limit');
       if (f.variant !== item.variant) { const r = currentRaw(); item.rawPrice = r?.price ?? null; item.priceSource = r?.source || null; }
       const { lotId, grade, ...rest } = f;
       // A different printing has a different graded price too.
@@ -3296,7 +3387,9 @@
     on('portfolio', onLivePortfolio);
     on('account', async () => {
       // e.g. made (or no longer) a moderator: refresh what this account can see
-      try { user = (await api('/api/auth/me')).user || user; paintAdminAccess(); } catch { /* next time */ }
+      const was = isPremiumUser();
+      try { user = (await api('/api/auth/me')).user || user; paintAdminAccess(); renderPortfolio(); } catch { /* next time */ }
+      if (!was && isPremiumUser()) { toast('Premium is on ✦ — unlimited cards'); pushRemote(); }
     });
     on('banned', (d) => {
       disconnectLive();
@@ -3649,7 +3742,7 @@
           <div class="profile-id">
             <h3 id="sheetTitle">${esc(u.name)}</h3>
             <p class="muted">${[u.username ? `@${esc(u.username)}` : '', u.email ? esc(u.email) : ''].filter(Boolean).join(' · ')}</p>
-            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}${u.mod ? ' · <i class="tag mod">Moderator</i>' : ''}</p>
+            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}${u.mod ? ' · <i class="tag mod">Moderator</i>' : ''}${u.premium ? ` · <i class="tag premium">✦ Premium${u.premiumSource === 'paid' ? ' (paid)' : u.premiumSource === 'granted' ? ' (given)' : ''}</i>` : ''}</p>
           </div>
         </div>
         ${u.bannedAt ? `<p class="adm-banned">Banned ${esc(timeAgo(u.bannedAt))}${u.banReason ? ` — ${esc(u.banReason)}` : ''}</p>` : ''}
@@ -3661,6 +3754,7 @@
           ${amAdmin && u.avatar ? '<button class="btn ghost" data-aa="avatar">Remove profile picture</button>' : ''}
           ${amAdmin && u.bio ? '<button class="btn ghost" data-aa="bio">Clear description</button>' : ''}
           ${amAdmin && !u.admin ? `<button class="btn ghost" data-aa="${u.mod ? 'unmod' : 'mod'}">${u.mod ? 'Remove moderator' : 'Make moderator'}</button>` : ''}
+          ${amAdmin && !u.admin ? (u.premiumSource === 'granted' ? '<button class="btn ghost" data-aa="unpremium">Remove Premium</button>' : u.premiumSource === 'paid' ? '' : '<button class="btn ghost" data-aa="premium">✦ Give Premium</button>') : ''}
           ${amAdmin && !u.admin ? '<button class="btn danger" data-aa="delete">Delete account</button>' : ''}
         </div>
         <form class="adm-form glass" id="warnForm" hidden>
@@ -3693,6 +3787,11 @@
         if (!confirm(`Make ${u.name} a moderator?\n\nModerators see the admin panel and can send warnings, remove listings and edit card prices. They can’t ban or delete accounts.`)) return;
         run(() => api(`/api/admin/users/${u.id}/role`, { method: 'POST', body: { role: 'mod' } }), `${u.name} is now a moderator`);
       }
+      if (a === 'premium') {
+        if (!confirm(`Give ${u.name} Premium?\n\nThey get unlimited cards for free, the same as paying. You can remove it again here.`)) return;
+        run(() => api(`/api/admin/users/${u.id}/premium`, { method: 'POST', body: { on: true } }), `${u.name} now has Premium`);
+      }
+      if (a === 'unpremium') run(() => api(`/api/admin/users/${u.id}/premium`, { method: 'POST', body: { on: false } }), `Premium removed from ${u.name}`);
       if (a === 'unmod') run(() => api(`/api/admin/users/${u.id}/role`, { method: 'POST', body: { role: null } }), `${u.name} is no longer a moderator`);
       if (a === 'avatar') run(() => api(`/api/admin/users/${u.id}/clear`, { method: 'POST', body: { avatar: true } }), 'Profile picture removed');
       if (a === 'bio') run(() => api(`/api/admin/users/${u.id}/clear`, { method: 'POST', body: { bio: true } }), 'Description cleared');

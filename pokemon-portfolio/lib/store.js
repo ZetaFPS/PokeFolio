@@ -427,6 +427,10 @@ async function pgStore(url, legacyDir) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at BIGINT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_granted BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_sub TEXT;
     CREATE TABLE IF NOT EXISTS warnings (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -462,6 +466,8 @@ async function pgStore(url, legacyDir) {
     id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false,
     avatarAt: r.avatar_at != null ? +r.avatar_at : null, username: r.username || null, bio: r.bio || '', showCollection: r.show_collection === true,
     bannedAt: r.banned_at != null ? +r.banned_at : null, banReason: r.ban_reason || null, role: r.role || null,
+    premiumGranted: r.premium_granted === true, premiumUntil: r.premium_until != null ? +r.premium_until : null,
+    stripeCustomer: r.stripe_customer || null, stripeSub: r.stripe_sub || null,
   };
   const dupe = (e) => {
     if (e.code !== '23505') return e;
@@ -504,6 +510,10 @@ async function pgStore(url, legacyDir) {
       if (fields.bannedAt !== undefined) { vals.push(fields.bannedAt); sets.push(`banned_at = $${vals.length}`); }
       if (fields.banReason !== undefined) { vals.push(fields.banReason); sets.push(`ban_reason = $${vals.length}`); }
       if (fields.role !== undefined) { vals.push(fields.role); sets.push(`role = $${vals.length}`); }
+      if (fields.premiumGranted !== undefined) { vals.push(!!fields.premiumGranted); sets.push(`premium_granted = $${vals.length}`); }
+      if (fields.premiumUntil !== undefined) { vals.push(fields.premiumUntil); sets.push(`premium_until = $${vals.length}`); }
+      if (fields.stripeCustomer !== undefined) { vals.push(fields.stripeCustomer); sets.push(`stripe_customer = $${vals.length}`); }
+      if (fields.stripeSub !== undefined) { vals.push(fields.stripeSub); sets.push(`stripe_sub = $${vals.length}`); }
       if (sets.length) {
         vals.push(id);
         try { await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); } catch (e) { throw dupe(e); }

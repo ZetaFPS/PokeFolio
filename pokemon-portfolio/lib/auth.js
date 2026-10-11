@@ -30,6 +30,8 @@ function createAuth(store) {
       id: u.id, email: u.email, name: u.name, username: u.username || null, bio: u.bio || '', createdAt: u.createdAt,
       showOnLeaderboard: u.showOnLeaderboard !== false, showCollection: u.showCollection === true, avatar: avatarUrl(u.id, u.avatarAt),
       ...(isAdmin(u) ? { isAdmin: true } : isMod(u) ? { isMod: true } : {}),
+      premium: isPremium(u), premiumSource: premiumSource(u), premiumUntil: u.premiumUntil || null,
+      canManageBilling: !!u.stripeCustomer, cardLimit: isPremium(u) ? null : FREE_CARD_LIMIT,
     };
   }
 
@@ -99,6 +101,18 @@ const isAdmin = (u) => !!u?.email && adminEmails().has(String(u.email).toLowerCa
 const isMod = (u) => !!u && !isAdmin(u) && u.role === 'mod';
 const isStaff = (u) => isAdmin(u) || isMod(u);
 
+// Premium: unlimited cards. From a paid plan (premiumUntil, kept up to date by Stripe), a grant by
+// an admin in the admin panel (premiumGranted), or being an admin.
+const FREE_CARD_LIMIT = 35;
+function premiumSource(u) {
+  if (!u) return null;
+  if (isAdmin(u)) return 'admin';
+  if (u.premiumGranted) return 'granted';
+  if ((u.premiumUntil || 0) > Date.now()) return 'paid';
+  return null;
+}
+const isPremium = (u) => !!premiumSource(u);
+
 // Usernames: what friends type to add you. 3–20 letters, numbers, dots or underscores, stored lowercase.
 function checkUsername(raw) {
   const u = String(raw ?? '').trim().replace(/^@/, '').toLowerCase();
@@ -116,4 +130,5 @@ function httpError(status, message) {
   return e;
 }
 
-module.exports = { createAuth, httpError, avatarUrl, checkUsername, isAdmin, isMod, isStaff };
+module.exports = {
+  FREE_CARD_LIMIT, isPremium, premiumSource, createAuth, httpError, avatarUrl, checkUsername, isAdmin, isMod, isStaff };
