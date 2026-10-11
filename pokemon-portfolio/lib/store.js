@@ -16,6 +16,13 @@ const PRODUCT_SORTS = {
   price_asc: (a, b) => (a.price ?? Infinity) - (b.price ?? Infinity) || b.createdAt - a.createdAt,
   price_desc: (a, b) => (b.price ?? -1) - (a.price ?? -1) || b.createdAt - a.createdAt,
 };
+// Distance (miles) between two points, for "near me" marketplace searches.
+function milesBetween(a, b) {
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+  return 3958.8 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 const PRODUCT_ORDER_SQL = {
   new: 'p.created_at DESC',
   price_asc: 'p.price ASC NULLS LAST, p.created_at DESC',
@@ -191,12 +198,17 @@ function fileStore(dir) {
       save();
     },
     async listProducts(userId) { return Object.values(data.products).filter((p) => p.userId === userId).sort((a, b) => b.createdAt - a.createdAt).map((p) => ({ ...p })); },
-    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24, includeBanned = false } = {}) {
-      const rows = Object.values(data.products).map((p) => ({ ...p, seller: data.users[p.userId] })).filter((p) => p.seller && (includeBanned || !p.seller.bannedAt)).filter((p) => {
-        const hay = `${p.title} ${p.description || ''} ${p.seller.name} ${p.seller.username || ''}`.toLowerCase();
+    // geo: { lat, lon, radius } — radius in miles (0 = anywhere); adds each listing's distance.
+    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24, includeBanned = false, geo = null } = {}) {
+      let rows = Object.values(data.products).map((p) => ({ ...p, seller: data.users[p.userId] })).filter((p) => p.seller && (includeBanned || !p.seller.bannedAt)).filter((p) => {
+        const hay = `${p.title} ${p.description || ''} ${p.seller.name} ${p.seller.username || ''} ${p.location || ''} ${p.place || ''}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       });
-      rows.sort(PRODUCT_SORTS[sort] || PRODUCT_SORTS.new);
+      if (geo) {
+        rows = rows.map((p) => ({ ...p, distance: p.lat != null && p.lon != null ? milesBetween(geo, p) : null }));
+        if (geo.radius > 0) rows = rows.filter((p) => p.distance != null && p.distance <= geo.radius);
+      }
+      rows.sort(sort === 'near' && geo ? (a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity) || b.createdAt - a.createdAt : PRODUCT_SORTS[sort] || PRODUCT_SORTS.new);
       return {
         total: rows.length,
         items: rows.slice(offset, offset + limit).map(({ seller, ...p }) => ({ ...p, seller: { id: seller.id, name: seller.name, username: seller.username || null, avatarAt: seller.avatarAt || null, banned: !!seller.bannedAt } })),
@@ -402,6 +414,10 @@ async function pgStore(url, legacyDir) {
       updated_at  BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS products_user ON products (user_id, created_at DESC);
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS location TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS place TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION;
     CREATE TABLE IF NOT EXISTS product_images (
       id         TEXT PRIMARY KEY,
       product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -434,7 +450,9 @@ async function pgStore(url, legacyDir) {
     );`);
 
   const toGroup = (r) => r && { id: r.id, name: r.name, ownerId: r.owner_id, inviteCode: r.invite_code, createdAt: +r.created_at, kind: r.kind || 'group', dmKey: r.dm_key || null };
-  const toProduct = (r) => r && { id: r.id, userId: r.user_id, title: r.title, price: r.price != null ? +r.price : null, description: r.description, imageIds: r.image_ids || [], createdAt: +r.created_at, updatedAt: +r.updated_at };
+  const toProduct = (r) => r && { id: r.id, userId: r.user_id, title: r.title, price: r.price != null ? +r.price : null, description: r.description, imageIds: r.image_ids || [], createdAt: +r.created_at, updatedAt: +r.updated_at,
+    location: r.location || '', place: r.place || '', lat: r.lat != null ? +r.lat : null, lon: r.lon != null ? +r.lon : null,
+    ...(r.distance != null ? { distance: +r.distance } : {}) };
   const toFriendship = (r) => r && { requester: r.requester, addressee: r.addressee, status: r.status, createdAt: +r.created_at };
   const toMessage = (r) => r && {
     seq: +r.seq, groupId: r.group_id, userId: r.user_id, kind: r.kind, body: r.body, imageId: r.image_id, card: r.card,
@@ -615,33 +633,42 @@ async function pgStore(url, legacyDir) {
 
     // --- store products ---
     async createProduct(p) {
-      await q('INSERT INTO products (id, user_id, title, price, description, image_ids, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [p.id, p.userId, p.title, p.price, p.description, JSON.stringify(p.imageIds || []), p.createdAt, p.updatedAt]);
+      await q('INSERT INTO products (id, user_id, title, price, description, image_ids, created_at, updated_at, location, place, lat, lon) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+        [p.id, p.userId, p.title, p.price, p.description, JSON.stringify(p.imageIds || []), p.createdAt, p.updatedAt, p.location || '', p.place || '', p.lat ?? null, p.lon ?? null]);
     },
     async getProduct(id) { return toProduct((await q('SELECT * FROM products WHERE id = $1', [id])).rows[0]); },
     async updateProduct(id, f) {
-      await q('UPDATE products SET title = $2, price = $3, description = $4, image_ids = $5, updated_at = $6 WHERE id = $1',
-        [id, f.title, f.price, f.description, JSON.stringify(f.imageIds || []), f.updatedAt]);
+      await q('UPDATE products SET title = $2, price = $3, description = $4, image_ids = $5, updated_at = $6, location = $7, place = $8, lat = $9, lon = $10 WHERE id = $1',
+        [id, f.title, f.price, f.description, JSON.stringify(f.imageIds || []), f.updatedAt, f.location || '', f.place || '', f.lat ?? null, f.lon ?? null]);
       return store.getProduct(id);
     },
     async deleteProduct(id) { await q('DELETE FROM products WHERE id = $1', [id]); },
     async listProducts(userId) { return (await q('SELECT * FROM products WHERE user_id = $1 ORDER BY created_at DESC', [userId])).rows.map(toProduct); },
-    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24, includeBanned = false } = {}) {
+    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24, includeBanned = false, geo = null } = {}) {
       const vals = [];
       const where = includeBanned ? [] : ['u.banned_at IS NULL'];
       where.push(...words.map((w) => {
         vals.push(`%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
         const n = `$${vals.length}`;
-        return `(p.title ILIKE ${n} OR p.description ILIKE ${n} OR u.name ILIKE ${n} OR u.username ILIKE ${n})`;
+        return `(p.title ILIKE ${n} OR p.description ILIKE ${n} OR u.name ILIKE ${n} OR u.username ILIKE ${n} OR p.location ILIKE ${n} OR p.place ILIKE ${n})`;
       }));
+      // Distance in miles from the searcher's point (haversine), when searching by location.
+      let dist = 'NULL::double precision';
+      if (geo) {
+        vals.push(geo.lat, geo.lon);
+        const la = `$${vals.length - 1}`, lo = `$${vals.length}`;
+        dist = `(CASE WHEN p.lat IS NULL OR p.lon IS NULL THEN NULL ELSE 3958.8 * 2 * asin(least(1, sqrt(power(sin(radians(p.lat - ${la}) / 2), 2) + cos(radians(${la})) * cos(radians(p.lat)) * power(sin(radians(p.lon - ${lo}) / 2), 2)))) END)`;
+        if (geo.radius > 0) { vals.push(geo.radius); where.push(`${dist} <= $${vals.length}`); }
+      }
+      const order = sort === 'near' && geo ? `distance ASC NULLS LAST, p.created_at DESC` : PRODUCT_ORDER_SQL[sort] || PRODUCT_ORDER_SQL.new;
       vals.push(limit, offset);
-      const { rows } = await q(`SELECT p.*, u.name AS s_name, u.username AS s_username, u.avatar_at AS s_avatar_at, u.banned_at AS s_banned_at, COUNT(*) OVER () AS total
+      const { rows } = await q(`SELECT p.*, ${dist} AS distance, u.name AS s_name, u.username AS s_username, u.avatar_at AS s_avatar_at, u.banned_at AS s_banned_at, COUNT(*) OVER () AS total
                                 FROM products p JOIN users u ON u.id = p.user_id
                                 ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-                                ORDER BY ${PRODUCT_ORDER_SQL[sort] || PRODUCT_ORDER_SQL.new}
+                                ORDER BY ${order}
                                 LIMIT $${vals.length - 1} OFFSET $${vals.length}`, vals);
       let total = rows.length ? +rows[0].total : 0;
-      if (!rows.length && offset) total = (await store.searchProducts({ words, sort, offset: 0, limit: 1, includeBanned })).total;
+      if (!rows.length && offset) total = (await store.searchProducts({ words, sort, offset: 0, limit: 1, includeBanned, geo })).total;
       return {
         total,
         items: rows.map((r) => ({ ...toProduct(r), seller: { id: r.user_id, name: r.s_name, username: r.s_username || null, avatarAt: r.s_avatar_at != null ? +r.s_avatar_at : null, banned: r.s_banned_at != null } })),

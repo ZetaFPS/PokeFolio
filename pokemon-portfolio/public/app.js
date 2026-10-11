@@ -205,6 +205,7 @@
     connectLive();
     paintAdminAccess();
     handleInviteLink();
+    handleProfileLink();
     setTimeout(promptUsername, 900);
     setTimeout(offerInstall, 4000);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
@@ -2631,11 +2632,35 @@
       default: return '<button class="btn primary glow" data-pa="message">Message</button><button class="btn" data-pa="add">+ Add friend</button>';
     }
   }
+  // "0.4 mi" / "12 mi" / "1,240 mi"
+  const fmtMiles = (d) => (d < 1 ? '<1 mi' : d < 10 ? `${d.toFixed(1).replace(/\.0$/, '')} mi` : `${Math.round(d).toLocaleString()} mi`);
+  const PIN = '<svg class="pin" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>';
+  // Tiles show the town (not a typed street address); the listing itself shows what the seller wrote.
+  const tilePlace = (p) => {
+    const where = p.place || p.location;
+    if (!where && p.distance == null) return '';
+    return `<span class="listing-loc">${PIN}${esc(where || '')}${where && p.distance != null ? ' · ' : ''}${p.distance != null ? fmtMiles(p.distance) : ''}</span>`;
+  };
+  // The phone/computer's location → { lat, lon, label } (label = the town, from the server).
+  function deviceLocation() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error('Location isn’t available on this device — type a city or ZIP code instead.'));
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const lat = pos.coords.latitude, lon = pos.coords.longitude;
+        let label = 'Near you';
+        try { label = (await api(`/api/places?lat=${lat}&lon=${lon}`)).place?.label || label; } catch { /* keep the generic label */ }
+        resolve({ lat, lon, label });
+      }, (e) => reject(new Error(e.code === 1
+        ? 'Location access is off for PokéFolio. Allow it in your browser or phone settings, or type a city or ZIP code instead.'
+        : 'Couldn’t get your location — type a city or ZIP code instead.')), { enableHighAccuracy: false, timeout: 12000, maximumAge: 10 * 60e3 });
+    });
+  }
   const listingTile = (p) => `
       <button class="listing" data-listing="${esc(p.id)}">
         <span class="listing-img"><img src="${esc(p.images[0] || PLACEHOLDER)}" alt="" loading="lazy" decoding="async">${p.images.length > 1 ? `<i>${p.images.length}</i>` : ''}</span>
         <span class="listing-title">${esc(p.title)}</span>
         <span class="listing-price num">${money(p.price)}</span>
+        ${tilePlace(p)}
         ${p.seller ? `<span class="listing-seller"><span class="pod-avatar xs">${faceHtml(p.seller.name, p.seller.avatar)}</span>${esc(p.seller.username ? `@${p.seller.username}` : p.seller.name)}</span>` : ''}
       </button>`;
   const storeGrid = (products, self) => (products.length ? `<div class="store-grid">${products.map(listingTile).join('')}</div>` : `<div class="groups-none"><b>${self ? 'Nothing listed yet' : 'Nothing listed right now'}</b><span>${self
@@ -2658,7 +2683,7 @@
           ${st ? `<div class="profile-value"><span class="eyebrow">Collection</span><b class="num">${money(st.value)}</b></div>` : ''}
         </div>
         ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : self ? '<p class="profile-bio empty">Add a short description so collectors know what you collect and what you’re after.</p>' : ''}
-        <div class="profile-actions">${relationButtons(data.relation)}</div>
+        <div class="profile-actions">${relationButtons(data.relation)}<button class="btn ghost" data-pa="share"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg> Share profile</button></div>
         ${top.length ? `<h4 class="profile-sub">Top ${top.length} card${top.length === 1 ? '' : 's'}</h4>
         <div class="profile-cards">${top.map((t, i) => `
             <button class="pcard" data-pcard="${esc(t.id)}">
@@ -2739,11 +2764,36 @@
     $('#collMore')?.addEventListener('click', () => loadProfileCollection(false));
   }
 
+  // A link anyone can open to see this profile: /u/username (or /u/id without a username).
+  const profileLink = (u) => `${location.origin}/u/${encodeURIComponent(u.username || u.id)}`;
+  async function shareProfile(u) {
+    const url = profileLink(u);
+    const self = u.id === user?.id;
+    const text = self ? 'Check out my Pokémon card collection on PokéFolio' : `${u.name} on PokéFolio`;
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+      try { await navigator.share({ title: `${u.name} on PokéFolio`, text, url }); return; } catch (e) { if (e?.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(url); toast('Profile link copied'); } catch { prompt('Copy this link to share the profile:', url); }
+  }
+  // Opened from a shared profile link (/u/…): show that profile once the app (or sign-in) is up.
+  const SHARED_PROFILE = location.pathname.match(/^\/u\/([A-Za-z0-9._-]{1,40})\/?$/);
+  let sharedProfileDone = !SHARED_PROFILE;
+  async function handleProfileLink() {
+    if (sharedProfileDone) return;
+    sharedProfileDone = true;
+    history.replaceState(null, '', '/' + location.search);
+    try {
+      const { user: u } = await api(`/api/users/lookup?username=${encodeURIComponent(decodeURIComponent(SHARED_PROFILE[1]))}`);
+      openProfile(u.id);
+    } catch { toast('That profile link doesn’t lead to a collector any more'); }
+  }
+
   async function profileAction(act, btn) {
     const ctx = profileCtx;
     const id = ctx?.id;
     if (!id) return;
     if (act === 'signin') { closeSheet(); showAuth(); setAuthMode('login'); return; }
+    if (act === 'share') { shareProfile(ctx.data.user); return; }
     if (act === 'edit') { openAccount(); return; }
     if (act === 'message') { openDm(id); return; }
     if (act === 'unfriend' && !confirm(`Remove ${ctx.data.user.name} from your friends?`)) return;
@@ -2793,7 +2843,7 @@
     openSheetShell();
     let res;
     try {
-      res = await api(`/api/products/${encodeURIComponent(id)}`);
+      res = await api(`/api/products/${encodeURIComponent(id)}${market.loc ? `?lat=${market.loc.lat}&lon=${market.loc.lon}` : ''}`);
     } catch (e) {
       $('#sheetBody').innerHTML = `<div class="listing-view"><p class="note">${esc(e.message || 'Couldn’t load that listing.')}</p></div>`;
       return;
@@ -2820,6 +2870,7 @@
         <div class="listing-info">
           <h3 id="sheetTitle">${esc(p.title)}</h3>
           <b class="listing-price lg num">${money(p.price)}</b>
+          ${p.location ? `<p class="listing-where">${PIN}<span>${esc(p.location)}${p.place && !p.location.toLowerCase().includes(p.place.split(',')[0].toLowerCase()) ? ` <small>· ${esc(p.place)}</small>` : ''}${p.distance != null ? ` <small>· ${fmtMiles(p.distance)} from ${esc(market.loc?.label || 'you')}</small>` : ''}</span></p>` : ''}
           ${p.description ? `<p class="listing-desc">${esc(p.description)}</p>` : ''}
           <p class="muted">Listed ${esc(timeAgo(p.createdAt))}${p.updatedAt - p.createdAt > 60e3 ? ` · updated ${esc(timeAgo(p.updatedAt))}` : ''}</p>
           <button class="seller glass" data-prof="${esc(s.id)}"><span class="pod-avatar sm">${faceHtml(s.name, s.avatar)}</span><span class="lb-name">${esc(s.name)}<small>${esc(atName(s) || 'View profile')}</small></span><span aria-hidden="true">›</span></button>
@@ -2891,6 +2942,10 @@
           <input type="file" id="picInput" accept="image/*" multiple hidden></div>
         <div class="field"><label for="lTitle">Title</label><input id="lTitle" maxlength="80" required placeholder="e.g. Base Set Charizard — PSA 9" value="${esc(existing?.title || '')}"></div>
         <div class="field"><label for="lPrice">Price (USD)</label><input id="lPrice" type="number" inputmode="decimal" min="0" step="0.01" required placeholder="0.00" value="${existing?.price ?? ''}"></div>
+        <div class="field"><label for="lLoc">Location <small class="muted">(optional)</small></label>
+          <div class="loc-row"><input id="lLoc" maxlength="120" placeholder="City, ZIP code, or a meet-up spot" value="${esc(existing?.location || '')}" autocomplete="address-level2"><button type="button" class="btn sm" id="lLocGps">${PIN} Use mine</button></div>
+          <p class="note">Shown on your listing so nearby buyers can find it. A city or neighbourhood is safest — only add a full address if you’re happy for anyone to see it.</p>
+        </div>
         <div class="field"><label for="lDesc">Description</label><textarea id="lDesc" rows="5" maxlength="2000" placeholder="Condition, edition, grading, shipping or meet-up, trades you'd consider…">${esc(existing?.description || '')}</textarea></div>
         <p class="auth-error" id="lErr" role="alert" hidden></p>
         <div class="listing-own">
@@ -2921,11 +2976,25 @@
       }
       paint();
     });
+    // "Use mine": the device's town, with its coordinates for distance searches.
+    let devicePos = null;
+    $('#lLocGps').addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true;
+      try {
+        devicePos = await deviceLocation();
+        $('#lLoc').value = devicePos.label === 'Near you' ? '' : devicePos.label;
+        if (!$('#lLoc').value) toast('Got your location — add a city name so buyers can read it');
+      } catch (ex) { toast(ex.message); }
+      b.disabled = false;
+    });
+    $('#lLoc').addEventListener('input', () => { if (devicePos && $('#lLoc').value.trim() !== devicePos.label) devicePos = null; });
     $('#lCancel').addEventListener('click', () => (existing ? openListing(existing.id) : profileCtx?.fromMarket ? closeSheet() : openProfile(user.id)));
     $('#listingForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = $('#lErr');
-      const body = { title: $('#lTitle').value.trim(), price: $('#lPrice').value, description: $('#lDesc').value, images: pics.map((p) => p.data || p.id) };
+      const body = { title: $('#lTitle').value.trim(), price: $('#lPrice').value, description: $('#lDesc').value, images: pics.map((p) => p.data || p.id), location: $('#lLoc').value.trim() };
+      if (devicePos && body.location) Object.assign(body, { lat: devicePos.lat, lon: devicePos.lon });
       const fail = (m) => { err.textContent = m; err.hidden = false; };
       err.hidden = true;
       if (!pics.length) return fail('Add at least one picture.');
@@ -2949,7 +3018,11 @@
   }
 
   /* ---- marketplace: everyone's listings ---- */
-  const market = { q: '', sort: 'new', items: [], total: 0, more: false, loading: false, loaded: false, error: null, req: 0, at: 0 };
+  const MK_LOC_KEY = 'pokefolio.marketLocation';
+  const market = { q: '', sort: 'new', items: [], total: 0, more: false, loading: false, loaded: false, error: null, req: 0, at: 0, loc: null, radius: 50 };
+  // The searcher's place ({ lat, lon, label }) and radius, remembered on this device only.
+  try { Object.assign(market, JSON.parse(lsGet(MK_LOC_KEY) || 'null') || {}); } catch { /* none */ }
+  if (market.loc) market.sort = 'near';
   function openMarket() {
     // Re-fetch when coming back after a while, so new listings show up.
     if (!market.loaded || Date.now() - market.at > 60e3) loadMarket(true);
@@ -2962,7 +3035,8 @@
     market.error = null;
     paintMarket();
     try {
-      const res = await api(`/api/products?q=${encodeURIComponent(market.q)}&sort=${market.sort}&offset=${market.items.length}`);
+      const near = market.loc ? `&lat=${market.loc.lat}&lon=${market.loc.lon}&radius=${market.radius}` : '';
+      const res = await api(`/api/products?q=${encodeURIComponent(market.q)}&sort=${market.sort}&offset=${market.items.length}${near}`);
       if (req !== market.req) return;
       market.items.push(...res.items);
       Object.assign(market, { total: res.total, more: res.more, loaded: true, at: Date.now() });
@@ -2975,14 +3049,17 @@
   }
   function paintMarket() {
     const n = market.total;
+    const where = market.loc ? (market.radius ? ` within ${market.radius} mi of ${market.loc.label}` : ` · nearest to ${market.loc.label} first`) : '';
     $('#mkSub').textContent = !market.loaded ? 'Cards and collectibles listed by PokéFolio collectors'
-      : market.q ? `${n} listing${n === 1 ? '' : 's'} matching “${market.q}”` : `${n} listing${n === 1 ? '' : 's'} from PokéFolio collectors`;
+      : market.q ? `${n} listing${n === 1 ? '' : 's'} matching “${market.q}”${where}` : `${n} listing${n === 1 ? '' : 's'}${where || ' from PokéFolio collectors'}`;
+    paintMarketLocation();
     const grid = $('#mkGrid');
     if (market.items.length) grid.innerHTML = market.items.map(listingTile).join('');
     else if (market.loading) grid.innerHTML = Array.from({ length: 8 }, () => '<div class="listing skel"><span class="listing-img"></span><span class="skel-line"></span><span class="skel-line short"></span></div>').join('');
     else if (market.loaded) {
       grid.innerHTML = `<div class="groups-none market-empty">${market.q
-        ? `<b>No listings match “${esc(market.q)}”</b><span>Try fewer or different words — search covers titles, descriptions and sellers.</span>`
+        ? `<b>No listings match “${esc(market.q)}”${market.loc && market.radius ? ` within ${market.radius} mi` : ''}</b><span>Try fewer or different words${market.loc && market.radius ? ', or a bigger distance' : ''} — search covers titles, descriptions, sellers and locations.</span>`
+        : market.loc && market.radius ? `<b>Nothing listed within ${market.radius} mi of ${esc(market.loc.label)}</b><span>Try a bigger distance, or “Show everywhere”.</span>`
         : '<b>Nothing for sale yet</b><span>Be the first — tap “+ Sell something” to list a card or product.</span>'}</div>`;
     } else grid.innerHTML = '';
     $('#mkMore').innerHTML = market.error ? `<p class="note">${esc(market.error)}</p>`
@@ -3005,6 +3082,54 @@
   $('#mkForm').addEventListener('submit', (e) => { e.preventDefault(); runMarketSearch(); $('#mkQuery').blur(); });
   $('#mkQuery').addEventListener('input', () => { clearTimeout(mkTimer); mkTimer = setTimeout(runMarketSearch, 350); });
   $('#mkSort').addEventListener('change', (e) => { market.sort = e.target.value; loadMarket(true); });
+
+  // Location filter: "Use my current location", or a typed city / ZIP / address.
+  function paintMarketLocation() {
+    const loc = market.loc;
+    $('#mkLocLabel').textContent = loc ? loc.label : 'Anywhere · find listings near you';
+    $('#mkLocBtn').classList.toggle('set', !!loc);
+    $('#mkRadius').hidden = !loc;
+    $('#mkRadius').value = String(market.radius);
+    $('#mkNearOpt').disabled = !loc;
+    if (!loc && market.sort === 'near') market.sort = 'new';
+    $('#mkSort').value = market.sort;
+  }
+  const saveMarketLocation = () => lsSet(MK_LOC_KEY, JSON.stringify({ loc: market.loc, radius: market.radius }));
+  function setMarketLocation(loc) {
+    market.loc = loc ? { lat: Math.round(loc.lat * 100) / 100, lon: Math.round(loc.lon * 100) / 100, label: loc.label } : null;
+    if (loc) market.sort = 'near';
+    saveMarketLocation();
+    toggleLocPanel(false);
+    loadMarket(true);
+  }
+  function toggleLocPanel(open = $('#mkLocPanel').hidden) {
+    $('#mkLocPanel').hidden = !open;
+    $('#mkLocBtn').setAttribute('aria-expanded', String(open));
+    $('#mkLocMsg').hidden = true;
+    if (open && !matchMedia('(pointer: coarse)').matches) $('#mkLocInput').focus();
+  }
+  const locMsg = (m) => { $('#mkLocMsg').textContent = m; $('#mkLocMsg').hidden = false; };
+  $('#mkLocBtn').addEventListener('click', () => toggleLocPanel());
+  $('#mkLocGps').addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = 'Finding you…';
+    try { setMarketLocation(await deviceLocation()); } catch (ex) { locMsg(ex.message); }
+    b.disabled = false;
+    b.textContent = 'Use my current location';
+  });
+  $('#mkLocForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const q = $('#mkLocInput').value.trim();
+    if (!q) return;
+    try {
+      const { place } = await api(`/api/places?q=${encodeURIComponent(q)}`);
+      $('#mkLocInput').value = '';
+      setMarketLocation(place);
+    } catch (ex) { locMsg(ex.status ? ex.message : 'Couldn’t look that up — check your connection.'); }
+  });
+  $('#mkLocClear').addEventListener('click', () => setMarketLocation(null));
+  $('#mkRadius').addEventListener('change', (e) => { market.radius = +e.target.value; saveMarketLocation(); loadMarket(true); });
   $('#mkSell').addEventListener('click', () => {
     if (!user) { showAuth(); setAuthMode('signup'); return; }
     profileCtx = { id: user.id, fromMarket: true };
@@ -4462,6 +4587,6 @@
       user = null;
     }
     if (user || lsGet(GUEST_FLAG) === '1') enterApp();
-    else { showAuth(); handleInviteLink(); }
+    else { showAuth(); handleInviteLink(); handleProfileLink(); }
   })();
 })();

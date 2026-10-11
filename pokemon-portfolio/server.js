@@ -481,7 +481,7 @@ async function api(req, res, url) {
   if (pathname.startsWith('/api/admin/') && await adminApi(req, res, url)) return;
 
   // --- profiles, friends, direct messages, stores ---
-  if (/^\/api\/(users|friends|dm|products)(\/|$)/.test(pathname) && await socialApi(req, res, url)) return;
+  if (/^\/api\/(users|friends|dm|products|places)(\/|$)/.test(pathname) && await socialApi(req, res, url)) return;
 
   // --- groups: chat, photos, card shares, group leaderboard ---
   if (await groupsApi(req, res, url)) return;
@@ -581,10 +581,41 @@ function indexHtml() {
   const key = `${v}:${st.mtimeMs}:${st.size}`;
   if (indexCache?.key !== key) {
     const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
-      .replace(/(<(?:script|link)\b[^>]*\b(?:src|href)=")([\w.-]+\.(?:js|css))(")/g, `$1$2?v=${v}$3`);
+      // Absolute paths, so the app also loads on deeper links like /u/ash (shared profiles).
+      .replace(/(<(?:script|link)\b[^>]*\b(?:src|href)=")([\w.-]+\.(?:js|css))(")/g, `$1/$2?v=${v}$3`);
     indexCache = { key, html };
   }
   return indexCache.html;
+}
+
+// Shared profile links (/u/username): the app itself, with a title and preview text naming the
+// collector, so the link shows nicely when pasted into a chat. The app opens the profile.
+const PROFILE_LINK = /^\/u\/([A-Za-z0-9._-]{1,40})\/?$/;
+const escHtml = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+async function serveProfileLink(req, res, url) {
+  let html = indexHtml();
+  try {
+    const handle = url.pathname.match(PROFILE_LINK)[1];
+    const u = /^[0-9a-f-]{36}$/.test(handle) ? await store.getUser(handle) : await store.getUserByUsername(handle.toLowerCase()).catch(() => null);
+    if (u && !u.bannedAt) {
+      const e = await leaderboard.entryFor(u.id).catch(() => null);
+      const showStats = u.showOnLeaderboard !== false || u.showCollection === true;
+      const title = `${u.name}${u.username ? ` (@${u.username})` : ''} on PokéFolio`;
+      const desc = (u.bio || '').trim().slice(0, 160)
+        || (showStats && e ? `${e.cards} card${e.cards === 1 ? '' : 's'} · $${Math.round(e.value).toLocaleString('en-US')} collection on PokéFolio` : 'See their Pokémon card collection and store on PokéFolio.');
+      const origin = `${isHttps(req) ? 'https' : 'http'}://${req.headers.host}`;
+      const meta = [
+        `<meta property="og:type" content="profile">`, `<meta property="og:site_name" content="PokéFolio">`,
+        `<meta property="og:title" content="${escHtml(title)}">`, `<meta property="og:description" content="${escHtml(desc)}">`,
+        `<meta property="og:url" content="${escHtml(origin + url.pathname)}">`, `<meta property="og:image" content="${escHtml(origin)}/icons/icon-512.png">`,
+        `<meta name="twitter:card" content="summary">`,
+      ].join('\n  ');
+      html = html.replace(/<title>[^<]*<\/title>/, () => `<title>${escHtml(title)}</title>\n  ${meta}`)
+        .replace(/(<meta name="description" content=")[^"]*/, (m, a) => a + escHtml(desc));
+    }
+  } catch { /* plain app page */ }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' });
+  res.end(req.method === 'HEAD' ? undefined : html);
 }
 
 function serveStatic(req, res, url) {
@@ -618,6 +649,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) await api(req, res, url);
+    else if ((req.method === 'GET' || req.method === 'HEAD') && PROFILE_LINK.test(url.pathname)) await serveProfileLink(req, res, url);
     else if (req.method === 'GET' || req.method === 'HEAD') serveStatic(req, res, url);
     else send(res, 405, 'Method not allowed');
   } catch (e) {

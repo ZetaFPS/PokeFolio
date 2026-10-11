@@ -15,6 +15,7 @@
 const crypto = require('crypto');
 const { avatarUrl, checkUsername } = require('./auth');
 const { sniffImage } = require('./groups');
+const geo = require('./geo');
 
 const MAX_PRODUCTS = 60;
 const MAX_PRODUCT_IMAGES = 6;
@@ -28,10 +29,11 @@ const ID = /^[0-9a-f-]{36}$/;
 const IMAGE_HOSTS = /^(images\.pokemontcg\.io|assets\.tcgdex\.net|tcgplayer-cdn\.tcgplayer\.com)$/;
 const safeImage = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && IMAGE_HOSTS.test(x.hostname) ? x.href : null; } catch { return null; } };
 
-function createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live = null, isAdmin = () => false }) {
+function createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live = null, isAdmin = () => false, geocoder = geo }) {
   const ping = (userId) => live?.send(userId, 'friends', {});
   const limitWrite = rateLimit('friend/store', 60, 60e3);
   const limitUpload = rateLimit('listing upload', 30, 15 * 60e3);
+  const limitGeo = rateLimit('place lookup', 30, 60e3);
 
   const card = (u) => u && { id: u.id, name: u.name, username: u.username || null, avatar: avatarUrl(u.id, u.avatarAt) };
 
@@ -48,7 +50,30 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
     id: p.id, title: p.title, price: p.price, description: p.description || '', createdAt: p.createdAt, updatedAt: p.updatedAt,
     images: (p.imageIds || []).map((iid) => `/api/products/${p.id}/images/${iid}`),
     seller: seller ? card(seller) : undefined,
+    // What the seller typed, and the town it's in. Coordinates stay private; only distances are shared.
+    location: p.location || '', place: p.place || '',
+    ...(p.distance != null ? { distance: Math.round(p.distance * 10) / 10 } : {}),
   });
+
+  // A listing's place: from the seller's device (coordinates) or geocoded from what they typed.
+  async function listingPlace(body, prev) {
+    const location = String(body.location ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!location) return { location: '', place: '', lat: null, lon: null };
+    const lat = Number(body.lat), lon = Number(body.lon);
+    if (body.lat != null && body.lon != null && geo.validCoords(lat, lon)) {
+      const r = await geocoder.reverse(lat, lon).catch(() => null);
+      return { location, place: r?.label && r.label !== 'Near you' ? r.label : '', lat: geo.round(lat), lon: geo.round(lon) };
+    }
+    if (prev && prev.location === location) return { location, place: prev.place || '', lat: prev.lat ?? null, lon: prev.lon ?? null };
+    const g = await geocoder.geocode(location).catch(() => null);
+    return { location, place: g?.label || '', lat: g?.lat ?? null, lon: g?.lon ?? null };
+  }
+  // ?lat=&lon=&radius= on a marketplace request → { lat, lon, radius } or null.
+  function geoParams(params) {
+    const lat = Number(params.get('lat')), lon = Number(params.get('lon'));
+    if (params.get('lat') == null || params.get('lon') == null || !geo.validCoords(lat, lon)) return null;
+    return { lat, lon, radius: Math.max(0, Math.min(12500, Number(params.get('radius')) || 0)) };
+  }
 
   // Cleaned listing fields from a request body.
   function listingFields(body) {
@@ -136,9 +161,14 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
     if (parts[1] === 'users') {
       // GET /api/users/lookup?username=ash
       if (parts[2] === 'lookup' && parts.length === 3 && method === 'GET') {
-        let username;
-        try { username = checkUsername(url.searchParams.get('username')); } catch { throw httpError(404, 'No collector with that username.'); }
-        const u = await store.getUserByUsername(username);
+        const handle = String(url.searchParams.get('username') || '').replace(/^@/, '');
+        let u = null;
+        if (ID.test(handle)) u = await store.getUser(handle);
+        else {
+          let username;
+          try { username = checkUsername(handle); } catch { throw httpError(404, 'No collector with that username.'); }
+          u = await store.getUserByUsername(username);
+        }
         if (!u || u.bannedAt) throw httpError(404, 'No collector with that username.');
         send(res, 200, { user: card(u) });
         return true;
@@ -251,6 +281,20 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
       return true;
     }
 
+    /* ---------- places (marketplace locations) ---------- */
+    // GET /api/places?q=Austin TX → { place: { lat, lon, label } }
+    // GET /api/places?lat=&lon=     → the town at those coordinates
+    if (parts[1] === 'places' && parts.length === 2 && method === 'GET') {
+      limitGeo(req);
+      const p = url.searchParams;
+      let place = null;
+      if (p.get('lat') != null && p.get('lon') != null) place = await geocoder.reverse(Number(p.get('lat')), Number(p.get('lon'))).catch(() => null);
+      else if (p.get('q')) place = await geocoder.geocode(String(p.get('q')).slice(0, 160)).catch(() => null);
+      if (!place) throw httpError(404, 'Couldn’t find that place — try a city and state, or a ZIP code.');
+      send(res, 200, { place });
+      return true;
+    }
+
     /* ---------- store ---------- */
     if (parts[1] === 'products') {
       const pid = parts[2];
@@ -269,9 +313,9 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
       // GET /api/products?q=&sort=new|price_asc|price_desc&offset= — the marketplace (everyone's listings)
       if (parts.length === 2 && method === 'GET') {
         const words = String(url.searchParams.get('q') || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8).map((w) => w.slice(0, 40));
-        const sort = ['new', 'price_asc', 'price_desc'].includes(url.searchParams.get('sort')) ? url.searchParams.get('sort') : 'new';
+        const sort = ['new', 'price_asc', 'price_desc', 'near'].includes(url.searchParams.get('sort')) ? url.searchParams.get('sort') : 'new';
         const offset = Math.min(10000, Math.max(0, parseInt(url.searchParams.get('offset'), 10) || 0));
-        const { items, total } = await store.searchProducts({ words, sort, offset, limit: MARKET_PAGE });
+        const { items, total } = await store.searchProducts({ words, sort, offset, limit: MARKET_PAGE, geo: geoParams(url.searchParams) });
         send(res, 200, { total, offset, more: offset + items.length < total, items: items.map((p) => publicProduct(p, p.seller)) });
         return true;
       }
@@ -281,6 +325,8 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
         const seller = p && await store.getUser(p.userId);
         const me = await optionalUser(req);
         if (!p || !seller || (seller.bannedAt && !isAdmin(me))) throw httpError(404, 'That listing doesn’t exist any more.');
+        const from = geoParams(url.searchParams);
+        if (from && p.lat != null && p.lon != null) p.distance = geo.miles(from, p);
         send(res, 200, { product: publicProduct(p, seller), relation: await relation(me, p.userId) });
         return true;
       }
@@ -291,7 +337,7 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
         const body = await readBody(req);
         const fields = listingFields(body);
         if ((await store.listProducts(user.id)).length >= MAX_PRODUCTS) throw httpError(400, `You can list up to ${MAX_PRODUCTS} items.`);
-        const p = { id: newId(), userId: user.id, ...fields, imageIds: [], createdAt: Date.now(), updatedAt: Date.now() };
+        const p = { id: newId(), userId: user.id, ...fields, ...(await listingPlace(body, null)), imageIds: [], createdAt: Date.now(), updatedAt: Date.now() };
         await store.createProduct(p);
         try {
           p.imageIds = await savePictures(p.id, body.images);
@@ -309,8 +355,9 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
         const p = await ownedProduct(pid, user);
         const body = await readBody(req);
         const fields = listingFields(body);
+        const place = await listingPlace(body, p);
         const imageIds = await savePictures(p.id, body.images, p.imageIds || []);
-        const updated = await store.updateProduct(p.id, { ...p, ...fields, imageIds, updatedAt: Date.now() });
+        const updated = await store.updateProduct(p.id, { ...p, ...fields, ...place, imageIds, updatedAt: Date.now() });
         send(res, 200, { product: publicProduct(updated, user) });
         return true;
       }

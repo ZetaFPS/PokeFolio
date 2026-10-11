@@ -300,8 +300,35 @@
             <option value="new">Newest</option>
             <option value="price_asc">Price: low to high</option>
             <option value="price_desc">Price: high to low</option>
+            <option value="near" id="mkNearOpt" disabled>Nearest first</option>
           </select>
         </form>
+        <div class="mk-loc">
+          <button type="button" class="mk-loc-btn" id="mkLocBtn" aria-expanded="false" aria-controls="mkLocPanel">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+            <span id="mkLocLabel">Anywhere</span>
+          </button>
+          <select id="mkRadius" aria-label="Distance" hidden>
+            <option value="10">Within 10 mi</option>
+            <option value="25">Within 25 mi</option>
+            <option value="50">Within 50 mi</option>
+            <option value="100">Within 100 mi</option>
+            <option value="250">Within 250 mi</option>
+            <option value="0">Any distance</option>
+          </select>
+        </div>
+        <div class="mk-loc-panel glass" id="mkLocPanel" hidden>
+          <button type="button" class="btn primary glow block" id="mkLocGps">Use my current location</button>
+          <form class="mk-loc-form" id="mkLocForm">
+            <input id="mkLocInput" maxlength="120" placeholder="…or type a city, ZIP code or address" aria-label="City, ZIP code or address" autocomplete="postal-code">
+            <button class="btn">Set</button>
+          </form>
+          <p class="auth-error" id="mkLocMsg" role="alert" hidden></p>
+          <div class="mk-loc-foot">
+            <span class="muted">Your location stays on this device — it’s only used to find nearby listings.</span>
+            <button type="button" class="link-btn" id="mkLocClear">Show everywhere</button>
+          </div>
+        </div>
         <div class="store-grid market-grid" id="mkGrid"></div>
         <div class="market-more" id="mkMore"></div>
         <p class="note">PokéFolio doesn’t handle payments or shipping. To buy something, message the seller — agree the details in chat and only pay in ways you trust.</p>

@@ -121,6 +121,18 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   names/usernames. **+ Sell something** posts a listing straight from the page. Anyone can browse;
   **Message seller** (signed in) opens a chat straight away — no need to be friends first. Listing
   pictures swipe on phones, and have arrows, dots and ←/→ keys on computers.
+- **Listing locations** — a listing can have a location: a city, ZIP code, meet-up spot or full
+  address (the form suggests a city — whatever is typed is shown on the listing), or **Use mine**
+  to fill in the device's town. The server turns it into rough coordinates (OpenStreetMap's
+  Nominatim, with Photon as a fallback — free, no key; rounded to about a kilometre and never sent
+  to other users). In the Marketplace, tap **📍 Anywhere** to **use your current location** or type
+  a city / ZIP, then pick **within 10–250 mi** (or any distance) and sort **Nearest first**. Tiles
+  show the listing's town and how far away it is. Your search location stays on your device.
+  (`lib/geo.js`, `GET /api/places`)
+- **Share a profile** — **Share profile** on any profile copies (or, on phones, shares) a link like
+  `https://your-site/u/username`. Opening it shows that collector's profile — name, picture, bio,
+  top cards, store, and their whole collection if they've turned on "Show my whole collection" —
+  even without an account. The link's preview in chats shows their name and bio.
 - **Messages** — direct messages with friends and group chats, in one list. Create a group, name
   it and invite friends with an 8-character code or link. Each group has a chat (text, photos, and
   cards shared from your collection with their live price), its own members-only leaderboard
