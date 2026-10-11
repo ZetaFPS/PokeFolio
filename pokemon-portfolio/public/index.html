@@ -79,8 +79,25 @@
           <label for="authPassword">Password</label>
           <input id="authPassword" name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required minlength="8">
         </div>
+        <div class="field" id="phoneField" hidden>
+          <label for="authPhone">Mobile number</label>
+          <input id="authPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0134" maxlength="24">
+          <small class="field-hint">We’ll text you a code to confirm it — and whenever you sign in on a new device. Outside the US, start with + and your country code.</small>
+        </div>
         <p class="auth-error" id="authError" role="alert" hidden></p>
         <button class="btn primary block glow" type="submit" id="authSubmit">Sign in</button>
+      </form>
+      <form id="codeForm" class="code-form" novalidate hidden>
+        <div class="code-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg></div>
+        <h2 class="code-title">Check your phone</h2>
+        <p class="muted" id="codeSub">We texted you a 6-digit code.</p>
+        <input id="codeInput" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••" aria-label="Verification code">
+        <p class="auth-error" id="codeError" role="alert" hidden></p>
+        <button class="btn primary block glow" type="submit" id="codeSubmit">Verify</button>
+        <div class="code-links">
+          <button type="button" class="link-btn" id="codeBack">← Back</button>
+          <button type="button" class="link-btn" id="codeResend">Text me a new code</button>
+        </div>
       </form>
       <button class="link-btn" id="guestBtn">Continue without an account →</button>
     </div>

@@ -1601,3 +1601,19 @@ select::-ms-expand { display: none; }
 .plan-row { text-align: left; color: inherit; cursor: pointer; }
 .plan-row:hover { border-color: var(--edge-2); }
 .plan-up { color: #fcd34d; font-weight: 700; margin-left: 4px; white-space: nowrap; }
+
+/* ---------- Two-factor: texted codes ---------- */
+.code-form, .phone-sheet { display: grid; gap: 12px; text-align: center; }
+.code-icon { width: 54px; height: 54px; margin: 0 auto; border-radius: 16px; display: grid; place-items: center; color: var(--cyan); background: rgba(34, 211, 238, .1); border: 1px solid rgba(34, 211, 238, .35); }
+.code-title, .phone-sheet h3 { font-family: var(--font-display); font-size: 22px; margin: 0; }
+.code-form .muted, .phone-sheet > .muted { margin: 0; font-size: 14px; line-height: 1.5; }
+.code-input {
+  width: 100%; text-align: center; font-family: var(--font-mono, monospace); font-size: 26px; font-weight: 700; letter-spacing: .35em;
+  background: rgba(0,0,0,.35); border: 1px solid var(--edge-2); border-radius: 14px; padding: 12px; color: var(--text);
+}
+.code-input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(34, 211, 238, .2); }
+.code-links { display: flex; justify-content: space-between; gap: 10px; }
+.code-links .link-btn { margin: 0; }
+.phone-sheet .field { text-align: left; }
+.phone-sheet .link-btn { margin: 0 auto; }
+.code-form .auth-error, .phone-sheet .auth-error { margin: 0; }

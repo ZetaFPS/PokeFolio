@@ -316,10 +316,34 @@ HTTPS for phones.
 | `STRIPE_SECRET_KEY` | Turns on Premium checkout (see **Premium** below). Your Stripe secret key, `sk_live_…` (or `sk_test_…` while testing). |
 | `STRIPE_PRICE_ID` | The Premium price (`price_…`) from your Stripe dashboard. A recurring price makes Premium a subscription; a one-time price makes it lifetime. |
 | `STRIPE_WEBHOOK_SECRET` | The signing secret (`whsec_…`) of the Stripe webhook pointed at `https://your-site/api/premium/webhook`. |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | Turn on **two-factor sign-in** (texted codes, see below). From [Twilio](https://console.twilio.com): your Account SID and Auth Token, and the SID (`VA…`) of a **Verify** service. Without them, accounts work as before with no phone step. |
+| `SMS_PROVIDER` | Testing only: `console` prints sign-in codes in the server log instead of texting them. Never set it on the live site. |
 | `POKEMONTCG_API_KEY` | Optional free key from [pokemontcg.io](https://dev.pokemontcg.io) for higher rate limits. |
 | `TRUST_PROXY` | Set to `1` when running behind a reverse proxy so rate limiting uses `X-Forwarded-For`. |
 | `VISUAL_INDEX` | Set to `off` to disable the scanner's visual index (the scanner then relies on reading the card's text). |
 | `VISUAL_INDEX_LANGS` | Which catalogues to index: `en,ja` (default), `en` or `ja`. |
+
+### Two-factor sign-in (texted codes)
+
+When Twilio is set up (below), accounts are protected with a code texted to their phone:
+- **Creating an account** asks for a mobile number after the name, username, email and password.
+  A 6-digit code is texted to it, and the account is only created once that code is entered.
+- **Signing in on a new device** (one that hasn't verified this account before) asks for a code
+  texted to the account's phone after the password. Verified devices are remembered for a year,
+  even after signing out, and need only the password.
+- **Accounts made before this** see a "Protect your account" screen after signing in, where they
+  add and verify a phone number ("Not now" asks again the next day). Account → **Phone** adds or
+  changes it at any time.
+- Lost phone: Admin panel → the user → **Reset phone & devices**. They then sign in with just their
+  password and add a new number.
+- Limits: a phone number can belong to one account; 5 codes an hour per number; 5 wrong guesses and
+  the code is void; 15 minutes to finish a step.
+
+Setting it up: create a [Twilio](https://www.twilio.com) account → **Verify → Services → Create**
+(name it "PokéFolio"; the texts read "Your PokéFolio verification code is …"). Copy the service SID
+(`VA…`), plus your Account SID and Auth Token, into Render as `TWILIO_VERIFY_SERVICE_SID`,
+`TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`, and redeploy. Twilio charges per verification (about
+$0.05 in the US). `/api/health` shows `phoneVerification: "twilio"` once it's on.
 
 ### Premium (35-card free limit)
 

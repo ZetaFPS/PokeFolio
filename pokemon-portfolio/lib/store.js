@@ -58,6 +58,7 @@ function fileStore(dir) {
     async getUser(id) { return data.users[id] || null; },
     async getUserByEmail(email) { return data.users[data.emails[email]] || null; },
     async getUserByUsername(username) { return Object.values(data.users).find((u) => u.username === username) || null; },
+    async getUserByPhone(phone) { return Object.values(data.users).find((u) => u.phone === phone) || null; },
     async createUser(u) {
       if (data.emails[u.email]) { const e = new Error('duplicate'); e.code = 'DUPLICATE'; throw e; }
       if (u.username && Object.values(data.users).some((x) => x.username === u.username)) { const e = new Error('duplicate username'); e.code = 'DUPLICATE_USERNAME'; throw e; }
@@ -431,6 +432,10 @@ async function pgStore(url, legacyDir) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until BIGINT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_sub TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS trusted_devices JSONB NOT NULL DEFAULT '[]';
+    CREATE UNIQUE INDEX IF NOT EXISTS users_phone ON users (phone) WHERE phone IS NOT NULL;
     CREATE TABLE IF NOT EXISTS warnings (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -468,11 +473,12 @@ async function pgStore(url, legacyDir) {
     bannedAt: r.banned_at != null ? +r.banned_at : null, banReason: r.ban_reason || null, role: r.role || null,
     premiumGranted: r.premium_granted === true, premiumUntil: r.premium_until != null ? +r.premium_until : null,
     stripeCustomer: r.stripe_customer || null, stripeSub: r.stripe_sub || null,
+    phone: r.phone || null, phoneVerifiedAt: r.phone_verified_at != null ? +r.phone_verified_at : null, trustedDevices: r.trusted_devices || [],
   };
   const dupe = (e) => {
     if (e.code !== '23505') return e;
     const d = new Error('duplicate');
-    d.code = /username/.test(e.constraint || e.detail || '') ? 'DUPLICATE_USERNAME' : 'DUPLICATE';
+    d.code = /username/.test(e.constraint || e.detail || '') ? 'DUPLICATE_USERNAME' : /phone/.test(e.constraint || e.detail || '') ? 'DUPLICATE_PHONE' : 'DUPLICATE';
     return d;
   };
   const store = {
@@ -480,9 +486,11 @@ async function pgStore(url, legacyDir) {
     async getUser(id) { return toUser((await q('SELECT * FROM users WHERE id = $1', [id])).rows[0]); },
     async getUserByEmail(email) { return toUser((await q('SELECT * FROM users WHERE email = $1', [email])).rows[0]); },
     async getUserByUsername(username) { return toUser((await q('SELECT * FROM users WHERE username = $1', [username])).rows[0]); },
+    async getUserByPhone(phone) { return toUser((await q('SELECT * FROM users WHERE phone = $1', [phone])).rows[0]); },
     async createUser(u) {
       try {
-        await q('INSERT INTO users (id, email, name, pass_hash, created_at, username) VALUES ($1, $2, $3, $4, $5, $6)', [u.id, u.email, u.name, u.passHash, u.createdAt, u.username || null]);
+        await q('INSERT INTO users (id, email, name, pass_hash, created_at, username, phone, phone_verified_at, trusted_devices) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+          [u.id, u.email, u.name, u.passHash, u.createdAt, u.username || null, u.phone || null, u.phoneVerifiedAt || null, JSON.stringify(u.trustedDevices || [])]);
       } catch (e) {
         throw dupe(e);
       }
@@ -514,6 +522,9 @@ async function pgStore(url, legacyDir) {
       if (fields.premiumUntil !== undefined) { vals.push(fields.premiumUntil); sets.push(`premium_until = $${vals.length}`); }
       if (fields.stripeCustomer !== undefined) { vals.push(fields.stripeCustomer); sets.push(`stripe_customer = $${vals.length}`); }
       if (fields.stripeSub !== undefined) { vals.push(fields.stripeSub); sets.push(`stripe_sub = $${vals.length}`); }
+      if (fields.phone !== undefined) { vals.push(fields.phone); sets.push(`phone = $${vals.length}`); }
+      if (fields.phoneVerifiedAt !== undefined) { vals.push(fields.phoneVerifiedAt); sets.push(`phone_verified_at = $${vals.length}`); }
+      if (fields.trustedDevices !== undefined) { vals.push(JSON.stringify(fields.trustedDevices || [])); sets.push(`trusted_devices = $${vals.length}`); }
       if (sets.length) {
         vals.push(id);
         try { await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); } catch (e) { throw dupe(e); }

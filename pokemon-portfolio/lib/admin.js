@@ -37,6 +37,7 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
     createdAt: u.createdAt, bannedAt: u.bannedAt || null, banReason: u.banReason || null, admin: isAdmin(u), mod: isMod(u),
     productCount: u.productCount, warningCount: u.warningCount,
     premium: isPremium(u), premiumSource: premiumSource(u), premiumUntil: u.premiumUntil || null,
+    phone: u.phone ? `•••• ${String(u.phone).slice(-4)}` : null, devices: (u.trustedDevices || []).length,
   });
   const productRow = (p) => ({
     id: p.id, title: p.title, price: p.price, description: p.description || '', createdAt: p.createdAt,
@@ -217,6 +218,15 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
         const u = await target(id, me);
         await store.updateUser(u.id, { premiumGranted: (await readBody(req)).on === true });
         live.send(u.id, 'account', {});
+        send(res, 200, { user: userRow(await store.getUser(u.id), me) });
+        return true;
+      }
+      // POST /api/admin/users/:id/phone-reset — they lost their phone: remove its number and every
+      // trusted device. They sign in with just their password, then add a new number.
+      if (action === 'phone-reset' && method === 'POST') {
+        adminOnly();
+        const u = await target(id, me);
+        await store.updateUser(u.id, { phone: null, phoneVerifiedAt: null, trustedDevices: [] });
         send(res, 200, { user: userRow(await store.getUser(u.id), me) });
         return true;
       }

@@ -32,6 +32,7 @@ function createAuth(store) {
       ...(isAdmin(u) ? { isAdmin: true } : isMod(u) ? { isMod: true } : {}),
       premium: isPremium(u), premiumSource: premiumSource(u), premiumUntil: u.premiumUntil || null,
       canManageBilling: !!u.stripeCustomer, cardLimit: isPremium(u) ? null : FREE_CARD_LIMIT,
+      phone: u.phone ? `•••• ${String(u.phone).slice(-4)}` : null,
     };
   }
 
@@ -56,7 +57,8 @@ function createAuth(store) {
     if (token) await store.deleteSession(sha256(token));
   }
 
-  async function signup({ email, password, name, username }) {
+  // Checks a sign-up and builds the account, without saving it (two-factor saves it after the code).
+  async function prepareSignup({ email, password, name, username }) {
     email = String(email || '').trim().toLowerCase();
     username = checkUsername(username);
     name = String(name || '').trim().slice(0, 60);
@@ -66,16 +68,20 @@ function createAuth(store) {
     if (password.length > 200) throw httpError(400, 'Password is too long.');
     if (await store.getUserByEmail(email)) throw httpError(409, 'An account with that email already exists.');
     if (await store.getUserByUsername(username)) throw httpError(409, 'That username is taken — try another.');
-    const user = { id: crypto.randomUUID(), email, username, name: name || username, passHash: await hashPassword(password), createdAt: Date.now() };
+    return { id: crypto.randomUUID(), email, username, name: name || username, passHash: await hashPassword(password), createdAt: Date.now() };
+  }
+  async function createPrepared(user) {
     try {
       await store.createUser(user);
     } catch (e) {
       if (e.code === 'DUPLICATE') throw httpError(409, 'An account with that email already exists.');
       if (e.code === 'DUPLICATE_USERNAME') throw httpError(409, 'That username is taken — try another.');
+      if (e.code === 'DUPLICATE_PHONE') throw httpError(409, 'That phone number is already on another PokéFolio account.');
       throw e;
     }
     return user;
   }
+  const signup = async (body) => createPrepared(await prepareSignup(body));
 
   async function login({ email, password }) {
     email = String(email || '').trim().toLowerCase();
@@ -89,7 +95,7 @@ function createAuth(store) {
   // Drop expired sessions once an hour.
   setInterval(() => { store.deleteExpiredSessions(Date.now()).catch(() => {}); }, 3600e3).unref();
 
-  return { publicUser, createSession, userForToken, destroySession, signup, login };
+  return { publicUser, createSession, userForToken, destroySession, signup, prepareSignup, createPrepared, login };
 }
 
 // Admins: accounts whose email is listed in ADMIN_EMAILS (comma-separated), e.g.

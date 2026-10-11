@@ -122,17 +122,67 @@
 
   /* ================= Auth UI ================= */
   let authMode = 'login';
+  // Two-factor (texted codes): on when the server has an SMS service set up.
+  let authConfig = { phoneVerification: false };
   function setAuthMode(mode) {
     authMode = mode;
     $$('.auth-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
     $('.auth-tabs').classList.toggle('signup', mode === 'signup');
     $('#nameField').hidden = mode !== 'signup';
     $('#usernameField').hidden = mode !== 'signup';
+    $('#phoneField').hidden = mode !== 'signup' || !authConfig.phoneVerification;
     $('#authSubmit').textContent = mode === 'signup' ? 'Create account' : 'Sign in';
     $('#authPassword').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
     $('#authError').hidden = true;
   }
   $$('.auth-tabs button').forEach((b) => b.addEventListener('click', () => setAuthMode(b.dataset.mode)));
+
+  const authConfigReady = api('/api/auth/config').then((c) => { authConfig = c || authConfig; setAuthMode(authMode); }).catch(() => {});
+  // Signed in (or signed up) — from the password, or after the texted code.
+  async function finishSignIn(res, mode) {
+    user = res.user;
+    lsDel(GUEST_FLAG);
+    $('#authPassword').value = '';
+    showCodeStep(null);
+    await enterApp();
+    toast(mode === 'signup' ? `Welcome, ${user.name}!` : `Welcome back, ${user.name}`);
+  }
+  // The "Check your phone" step of the sign-in card (null = back to the form).
+  let codeCtx = null; // { verify, mode }
+  function showCodeStep(step) {
+    codeCtx = step;
+    $('#authForm').hidden = !!step;
+    $('.auth-tabs').hidden = !!step;
+    $('#guestBtn').hidden = !!step;
+    $('#codeForm').hidden = !step;
+    $('#codeError').hidden = true;
+    if (!step) return;
+    $('#codeSub').textContent = `We texted a code to ${step.phone || 'your phone'}. ${step.mode === 'signup' ? 'Enter it to finish creating your account.' : 'This device is new for your account, so enter it to sign in.'}`;
+    $('#codeInput').value = '';
+    $('#codeInput').focus();
+  }
+  $('#codeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = $('#codeError'), btn = $('#codeSubmit');
+    const code = $('#codeInput').value.replace(/\D/g, '');
+    if (code.length < 4) { err.textContent = 'Enter the code from the text message.'; err.hidden = false; return; }
+    btn.disabled = true; btn.textContent = 'Checking…'; err.hidden = true;
+    try {
+      const res = await api('/api/auth/verify', { method: 'POST', body: { verify: codeCtx.verify, code } });
+      await finishSignIn(res, codeCtx.mode);
+    } catch (ex) {
+      err.textContent = ex.status ? ex.message : 'Can’t reach the PokéFolio server.';
+      err.hidden = false;
+      if (ex.status === 410) setTimeout(() => { showCodeStep(null); $('#authError').textContent = ex.message; $('#authError').hidden = false; }, 1800);
+    } finally { btn.disabled = false; btn.textContent = 'Verify'; }
+  });
+  // Submit as soon as a full code is typed or pasted (or filled in from the text by iOS).
+  $('#codeInput').addEventListener('input', (e) => { if (e.target.value.replace(/\D/g, '').length === 6) $('#codeForm').requestSubmit(); });
+  $('#codeResend').addEventListener('click', async () => {
+    try { const r = await api('/api/auth/resend', { method: 'POST', body: { verify: codeCtx.verify } }); toast(`New code sent to ${r.phone}`); }
+    catch (ex) { $('#codeError').textContent = ex.message || 'Couldn’t send a new code.'; $('#codeError').hidden = false; }
+  });
+  $('#codeBack').addEventListener('click', () => showCodeStep(null));
 
   $('#authForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -140,6 +190,10 @@
     const btn = $('#authSubmit');
     const body = { email: $('#authEmail').value, password: $('#authPassword').value, name: $('#authName').value };
     if (authMode === 'signup') body.username = $('#authUsername').value.trim().replace(/^@/, '');
+    if (authMode === 'signup' && authConfig.phoneVerification) {
+      body.phone = $('#authPhone').value.trim();
+      if ((body.phone.match(/\d/g) || []).length < 8) { err.textContent = 'Enter your mobile number — we’ll text you a code to confirm it.'; err.hidden = false; return; }
+    }
     err.hidden = true;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim())) { err.textContent = 'Enter a valid email address.'; err.hidden = false; return; }
     if (body.password.length < 8) { err.textContent = 'Password must be at least 8 characters.'; err.hidden = false; return; }
@@ -148,11 +202,8 @@
     btn.textContent = authMode === 'signup' ? 'Creating account…' : 'Signing in…';
     try {
       const res = await api(`/api/auth/${authMode === 'signup' ? 'signup' : 'login'}`, { method: 'POST', body });
-      user = res.user;
-      lsDel(GUEST_FLAG);
-      $('#authPassword').value = '';
-      await enterApp();
-      toast(authMode === 'signup' ? `Welcome, ${user.name}!` : `Welcome back, ${user.name}`);
+      if (res.verify) showCodeStep({ verify: res.verify, phone: res.phone, mode: authMode }); // a code was texted
+      else await finishSignIn(res, authMode);
     } catch (ex) {
       err.textContent = ex.status === 401 && authMode !== 'signup' ? 'Email or password is incorrect.' : ex.status ? ex.message : 'Can’t reach the PokéFolio server.';
       err.hidden = false;
@@ -214,6 +265,7 @@
     handleProfileLink();
     handlePremiumReturn();
     setTimeout(promptUsername, 900);
+    authConfigReady.then(() => setTimeout(maybePromptPhone, 3800)); // after the welcome toast
     setTimeout(offerInstall, 4000);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
     else if (state.items.length) { recordSnapshot(); refreshGraded(); }
@@ -331,6 +383,70 @@
   }
   let syncLimitShown = false;
 
+  /* ---------- Phone number (two-factor) for accounts that don't have one ---------- */
+  const PHONE_LATER = 'pokefolio.phoneLater';
+  function maybePromptPhone() {
+    if (!user || user.phone || !authConfig.phoneVerification) return;
+    let later = {};
+    try { later = JSON.parse(lsGet(PHONE_LATER) || '{}'); } catch { /* none */ }
+    if (Date.now() - (later[user.id] || 0) < 864e5) return; // asked again a day after "Not now"
+    if (!$('#sheet').hidden) return setTimeout(maybePromptPhone, 4000); // wait for other prompts
+    openPhoneSheet(true);
+  }
+  function openPhoneSheet(prompted = false) {
+    const change = !!user.phone;
+    $('#sheetBody').innerHTML = `
+      <form class="phone-sheet" id="phoneForm" novalidate>
+        <div class="code-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg></div>
+        <h3 id="sheetTitle">${change ? 'Change your phone number' : 'Protect your account'}</h3>
+        <p class="muted">${change ? `Your account uses ${esc(user.phone)}. Enter the new number and we’ll text it a code.`
+    : 'Add your mobile number. We’ll text you a code whenever you sign in on a new device, so nobody else can get into your account — even with your password.'}</p>
+        <div class="field" id="psPhoneField"><label for="psPhone">Mobile number</label>
+          <input id="psPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0134" maxlength="24"></div>
+        <div class="field" id="psCodeField" hidden><label for="psCode">Code from the text</label>
+          <input id="psCode" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••"></div>
+        <p class="auth-error" id="psErr" role="alert" hidden></p>
+        <button class="btn primary glow block" id="psGo">Text me a code</button>
+        ${prompted ? '<button type="button" class="link-btn" id="psLater">Not now</button>' : ''}
+      </form>`;
+    openSheetShell();
+    let step = null;
+    const fail = (m) => { $('#psErr').textContent = m; $('#psErr').hidden = false; };
+    $('#psLater')?.addEventListener('click', () => {
+      let later = {};
+      try { later = JSON.parse(lsGet(PHONE_LATER) || '{}'); } catch { /* none */ }
+      later[user.id] = Date.now();
+      lsSet(PHONE_LATER, JSON.stringify(later));
+      closeSheet();
+    });
+    $('#psCode').addEventListener('input', (e) => { if (e.target.value.replace(/\D/g, '').length === 6) $('#phoneForm').requestSubmit(); });
+    $('#phoneForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('#psErr').hidden = true;
+      const btn = $('#psGo');
+      btn.disabled = true;
+      try {
+        if (!step) {
+          step = await api('/api/account/phone', { method: 'POST', body: { phone: $('#psPhone').value } });
+          $('#psPhoneField').hidden = true;
+          $('#psCodeField').hidden = false;
+          $('#psCode').focus();
+          btn.textContent = 'Verify';
+          toast(`Code sent to ${step.phone}`);
+        } else {
+          const res = await api('/api/account/phone/verify', { method: 'POST', body: { verify: step.verify, code: $('#psCode').value } });
+          user = res.user;
+          closeSheet();
+          toast(`Phone ${user.phone} added — your account is protected`);
+        }
+      } catch (ex) {
+        fail(ex.status ? ex.message : 'Can’t reach the PokéFolio server.');
+        if (ex.status === 410) { step = null; $('#psPhoneField').hidden = false; $('#psCodeField').hidden = true; btn.textContent = 'Text me a code'; }
+      }
+      btn.disabled = false;
+    });
+  }
+
   function initials() {
     return user ? (user.name || user.email).trim().charAt(0).toUpperCase() : '';
   }
@@ -368,6 +484,7 @@
           <div class="info"><div class="k">Raw value</div><div class="v num">${money(t.value)}</div></div>
           <div class="info"><div class="k">Member since</div><div class="v">${new Date(user.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</div></div>
           <div class="info"><div class="k">Sync</div><div class="v">${esc($('#syncState').textContent || '—')}</div></div>
+          ${authConfig.phoneVerification ? `<button class="info plan-row" id="acctPhone" style="grid-column:1/-1"><div class="k">Phone · sign-in codes</div><div class="v">${user.phone ? `${esc(user.phone)} <span class="plan-up">Change ›</span>` : '<span class="down">Not set</span> <span class="plan-up">Add ›</span>'}</div></button>` : ''}
           <button class="info plan-row" id="acctPlan" style="grid-column:1/-1"><div class="k">Plan</div><div class="v">${isPremiumUser() ? '<b class="premium-tag">✦ Premium</b> · unlimited cards' : `Free · ${t.count} of ${FREE_LIMIT} cards <span class="plan-up">Upgrade ›</span>`}</div></button>
           <div class="info" style="grid-column:1/-1"><div class="k">Account storage</div><div class="v">${storageInfo?.persistent === false ? '<span class="down">⚠ Temporary — erased when the site updates</span>' : storageInfo?.storage === 'postgres' ? '<span class="up">✓ Database — kept across updates</span>' : 'Saved on this server'}</div></div>
         </div>
@@ -393,6 +510,7 @@
       </div>`;
     openSheetShell();
     $('#acctPlan')?.addEventListener('click', () => openPremium());
+    $('#acctPhone')?.addEventListener('click', () => openPhoneSheet(false));
     $('#logoutBtn')?.addEventListener('click', async () => {
       clearTimeout(syncTimer);
       await pushRemote().catch(() => {});
@@ -3742,7 +3860,7 @@
           <div class="profile-id">
             <h3 id="sheetTitle">${esc(u.name)}</h3>
             <p class="muted">${[u.username ? `@${esc(u.username)}` : '', u.email ? esc(u.email) : ''].filter(Boolean).join(' · ')}</p>
-            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}${u.mod ? ' · <i class="tag mod">Moderator</i>' : ''}${u.premium ? ` · <i class="tag premium">✦ Premium${u.premiumSource === 'paid' ? ' (paid)' : u.premiumSource === 'granted' ? ' (given)' : ''}</i>` : ''}</p>
+            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}${u.mod ? ' · <i class="tag mod">Moderator</i>' : ''}${u.phone ? ` · 📱 ${esc(u.phone)}` : ''}${u.premium ? ` · <i class="tag premium">✦ Premium${u.premiumSource === 'paid' ? ' (paid)' : u.premiumSource === 'granted' ? ' (given)' : ''}</i>` : ''}</p>
           </div>
         </div>
         ${u.bannedAt ? `<p class="adm-banned">Banned ${esc(timeAgo(u.bannedAt))}${u.banReason ? ` — ${esc(u.banReason)}` : ''}</p>` : ''}
@@ -3755,6 +3873,7 @@
           ${amAdmin && u.bio ? '<button class="btn ghost" data-aa="bio">Clear description</button>' : ''}
           ${amAdmin && !u.admin ? `<button class="btn ghost" data-aa="${u.mod ? 'unmod' : 'mod'}">${u.mod ? 'Remove moderator' : 'Make moderator'}</button>` : ''}
           ${amAdmin && !u.admin ? (u.premiumSource === 'granted' ? '<button class="btn ghost" data-aa="unpremium">Remove Premium</button>' : u.premiumSource === 'paid' ? '' : '<button class="btn ghost" data-aa="premium">✦ Give Premium</button>') : ''}
+          ${amAdmin && (u.phone || u.devices) ? '<button class="btn ghost" data-aa="phonereset">Reset phone & devices</button>' : ''}
           ${amAdmin && !u.admin ? '<button class="btn danger" data-aa="delete">Delete account</button>' : ''}
         </div>
         <form class="adm-form glass" id="warnForm" hidden>
@@ -3790,6 +3909,10 @@
       if (a === 'premium') {
         if (!confirm(`Give ${u.name} Premium?\n\nThey get unlimited cards for free, the same as paying. You can remove it again here.`)) return;
         run(() => api(`/api/admin/users/${u.id}/premium`, { method: 'POST', body: { on: true } }), `${u.name} now has Premium`);
+      }
+      if (a === 'phonereset') {
+        if (!confirm(`Reset ${u.name}’s phone number?\n\nUse this if they lost their phone. Their number and every remembered device are removed: they can sign in with just their password, then add a new number.`)) return;
+        run(() => api(`/api/admin/users/${u.id}/phone-reset`, { method: 'POST', body: {} }), 'Phone and devices reset');
       }
       if (a === 'unpremium') run(() => api(`/api/admin/users/${u.id}/premium`, { method: 'POST', body: { on: false } }), `Premium removed from ${u.name}`);
       if (a === 'unmod') run(() => api(`/api/admin/users/${u.id}/role`, { method: 'POST', body: { role: null } }), `${u.name} is no longer a moderator`);

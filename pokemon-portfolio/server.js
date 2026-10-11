@@ -7,6 +7,7 @@ const path = require('path');
 const { createStore } = require('./lib/store');
 const { createAuth, httpError, checkUsername, isAdmin, isPremium, FREE_CARD_LIMIT } = require('./lib/auth');
 const { createPremium, cardCount } = require('./lib/premium');
+const { createTwoFactor } = require('./lib/twofactor');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi, sniffImage } = require('./lib/groups');
@@ -24,7 +25,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi, socialApi, premiumApi, adminApi, visualIndex, catalog, packs; // set up in start()
+let store, auth, twoFactor, leaderboard, groupsApi, socialApi, premiumApi, adminApi, visualIndex, catalog, packs; // set up in start()
 const live = createLive();
 
 const MIME = {
@@ -74,6 +75,22 @@ function isHttps(req) {
 }
 function sessionCookie(req, token, maxAge) {
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isHttps(req) ? '; Secure' : ''}`;
+}
+// Two-factor: this browser's device id (kept across sign-outs, so a verified device stays trusted).
+function deviceCookie(req, id) {
+  return `${twoFactor.DEVICE_COOKIE}=${id}; Path=/api/; HttpOnly; SameSite=Lax; Max-Age=${twoFactor.DEVICE_DAYS * 86400}${isHttps(req) ? '; Secure' : ''}`;
+}
+// Sign in: a session, and this device marked as trusted for the account.
+async function signedIn(req, res, status, user, trustDevice) {
+  const s = await auth.createSession(user.id);
+  const cookieList = [sessionCookie(req, s.token, s.maxAge)];
+  if (trustDevice && twoFactor.enabled()) {
+    let dev = cookies(req)[twoFactor.DEVICE_COOKIE];
+    if (!dev || dev.length > 100) { dev = twoFactor.newDevice(); cookieList.push(deviceCookie(req, dev)); }
+    await twoFactor.trust(user.id, dev);
+    user = await store.getUser(user.id);
+  }
+  return send(res, status, { user: auth.publicUser(user) }, { 'Set-Cookie': cookieList });
 }
 
 const clientIp = (req) => (process.env.TRUST_PROXY ? (req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '') || req.socket.remoteAddress;
@@ -159,6 +176,8 @@ async function api(req, res, url) {
       persistent: storagePersistent(),
       hosted: isHosted(),
       priceCharting: prices.pcStatus(), // graded prices: is PriceCharting answering?
+      phoneVerification: twoFactor.provider(), // 'twilio', 'console' (testing) or 'off'
+
     });
   }
 
@@ -174,17 +193,58 @@ async function api(req, res, url) {
     const user = await auth.userForToken(cookies(req)[COOKIE]);
     return send(res, 200, { user: user ? auth.publicUser(user) : null });
   }
+  // Is two-factor (texted codes) on? The sign-up form asks for a phone number when it is.
+  if (pathname === '/api/auth/config' && method === 'GET') {
+    return send(res, 200, { phoneVerification: twoFactor.enabled() });
+  }
   if (pathname === '/api/auth/signup' && method === 'POST') {
     limitAuth(req);
-    const user = await auth.signup(await readBody(req));
-    const s = await auth.createSession(user.id);
-    return send(res, 201, { user: auth.publicUser(user) }, { 'Set-Cookie': sessionCookie(req, s.token, s.maxAge) });
+    const body = await readBody(req);
+    // With two-factor: text a code first ({ verify } → POST /api/auth/verify); the account is made then.
+    if (twoFactor.enabled()) return send(res, 202, await twoFactor.startSignup(body));
+    return signedIn(req, res, 201, await auth.signup(body), false);
   }
   if (pathname === '/api/auth/login' && method === 'POST') {
     limitAuth(req);
     const user = await auth.login(await readBody(req));
-    const s = await auth.createSession(user.id);
-    return send(res, 200, { user: auth.publicUser(user) }, { 'Set-Cookie': sessionCookie(req, s.token, s.maxAge) });
+    // A device this account hasn't verified before needs the code texted to its phone.
+    if (twoFactor.enabled() && user.phone && !twoFactor.trusted(user, cookies(req)[twoFactor.DEVICE_COOKIE])) {
+      return send(res, 202, await twoFactor.startLogin(user));
+    }
+    return signedIn(req, res, 200, user, false);
+  }
+  // POST /api/auth/verify { verify, code } — finish a sign-up or sign-in with the texted code
+  if (pathname === '/api/auth/verify' && method === 'POST') {
+    limitAuth(req);
+    const { verify, code } = await readBody(req);
+    const step = await twoFactor.finish(verify, code);
+    if (step.kind === 'phone') throw httpError(400, 'Wrong step.');
+    const user = await twoFactor.complete(step);
+    if (!user || user.bannedAt) throw httpError(403, 'This account can’t sign in.');
+    return signedIn(req, res, step.kind === 'signup' ? 201 : 200, user, true);
+  }
+  // POST /api/auth/resend { verify } — text the code again
+  if (pathname === '/api/auth/resend' && method === 'POST') {
+    limitAuth(req);
+    return send(res, 200, await twoFactor.resend((await readBody(req)).verify));
+  }
+  // POST /api/account/phone { phone } → { verify, phone } — add or change the account's phone number
+  if (pathname === '/api/account/phone' && method === 'POST') {
+    const user = await requireUser(req);
+    limitAuth(req);
+    if (!twoFactor.enabled()) throw httpError(503, 'Phone verification isn’t set up on this site yet.');
+    return send(res, 202, await twoFactor.startPhone(user, (await readBody(req)).phone));
+  }
+  // POST /api/account/phone/verify { verify, code } — save it once the code is right
+  if (pathname === '/api/account/phone/verify' && method === 'POST') {
+    const user = await requireUser(req);
+    limitAuth(req);
+    const { verify, code } = await readBody(req);
+    const step = await twoFactor.finish(verify, code, 'phone');
+    if (step.userId !== user.id) throw httpError(403, 'That code is for another account.');
+    await twoFactor.complete(step);
+    // This device just proved it has the phone: trust it too.
+    return signedIn(req, res, 200, await store.getUser(user.id), true);
   }
   if (pathname === '/api/auth/logout' && method === 'POST') {
     await auth.destroySession(cookies(req)[COOKIE]);
@@ -680,6 +740,9 @@ async function start() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
   await prices.attachStore(store); // saved graded prices survive restarts and PriceCharting outages
   auth = createAuth(store);
+  twoFactor = createTwoFactor({ store, auth, httpError });
+  if (!twoFactor.enabled()) console.log('  two-factor sign-in: off (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID to text codes)');
+  else if (twoFactor.provider() === 'console') console.log('  two-factor sign-in: TEST MODE — codes are printed here, not texted');
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit, live });
   premiumApi = createPremium({ store, httpError, send, readBody, requireUser, optionalUser, isHttps, live });
