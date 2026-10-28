@@ -55,6 +55,7 @@ function fileStore(dir) {
 
   return {
     kind: `file (${file})`,
+    async ping() { return true; },
     async getUser(id) { return data.users[id] || null; },
     async getUserByEmail(email) { return data.users[data.emails[email]] || null; },
     async getUserByUsername(username) { return Object.values(data.users).find((u) => u.username === username) || null; },
@@ -483,6 +484,7 @@ async function pgStore(url, legacyDir) {
   };
   const store = {
     kind: 'postgres',
+    async ping() { await q('SELECT 1'); return true; },
     async getUser(id) { return toUser((await q('SELECT * FROM users WHERE id = $1', [id])).rows[0]); },
     async getUserByEmail(email) { return toUser((await q('SELECT * FROM users WHERE email = $1', [email])).rows[0]); },
     async getUserByUsername(username) { return toUser((await q('SELECT * FROM users WHERE username = $1', [username])).rows[0]); },

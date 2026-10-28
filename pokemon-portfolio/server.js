@@ -170,6 +170,16 @@ async function api(req, res, url) {
 
   // --- status: is account storage permanent? ---
   if (pathname === '/api/health' && method === 'GET') {
+    // ?db=1 also checks the database answers (for uptime monitors): 503 when it doesn't.
+    if (url.searchParams.get('db') === '1') {
+      const t0 = Date.now();
+      try {
+        await Promise.race([store.ping(), new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), 8000))]);
+      } catch (e) {
+        return send(res, 503, { ok: false, database: 'unreachable', error: e.message });
+      }
+      return send(res, 200, { ok: true, database: 'ok', ms: Date.now() - t0 });
+    }
     return send(res, 200, {
       ok: true,
       storage: store.kind === 'postgres' ? 'postgres' : 'file',

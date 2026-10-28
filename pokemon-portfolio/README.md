@@ -392,6 +392,11 @@ Any host that runs a Node process works (Render, Railway, Fly.io, a VPS). Set `D
 (see above) so accounts survive redeploys. Build command: `npm install`, start command: `npm start`. The app can no longer be
 hosted as static files only (e.g. GitHub Pages), because sign-in and PriceCharting lookups need the server.
 
+**Raspberry Pi:** [`deploy/raspberry-pi/`](deploy/raspberry-pi/README.md) has a step-by-step guide and
+scripts to run the site on a Raspberry Pi 4 (database stays on Neon), reachable through a Cloudflare
+Tunnel, with nightly database backups and Uptime Kuma monitoring. `GET /api/health?db=1` also
+checks the database answers (503 if not), for uptime monitors.
+
 ## How it's built
 
 ```

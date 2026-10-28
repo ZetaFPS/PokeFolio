@@ -1,0 +1,26 @@
+[Unit]
+Description=PokéFolio web app
+Documentation=file:///opt/pokefolio/app/pokemon-portfolio/deploy/raspberry-pi/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pokefolio
+Group=pokefolio
+WorkingDirectory=/opt/pokefolio/app/pokemon-portfolio
+EnvironmentFile=/etc/pokefolio/pokefolio.env
+# Refuse to start without the database setting (it would otherwise keep accounts on the SD card).
+ExecStartPre=/bin/sh -c 'test -n "$DATABASE_URL" || { echo "DATABASE_URL is empty in /etc/pokefolio/pokefolio.env"; exit 1; }'
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+# Small hardening: the app only needs its own folder.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/pokefolio
+
+[Install]
+WantedBy=multi-user.target

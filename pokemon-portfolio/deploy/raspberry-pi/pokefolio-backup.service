@@ -1,0 +1,12 @@
+[Unit]
+Description=PokéFolio nightly database backup (Neon → this Pi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pokefolio
+Group=pokefolio
+EnvironmentFile=/etc/pokefolio/backup.env
+ExecStart=/usr/local/bin/pokefolio-backup
+Nice=10
